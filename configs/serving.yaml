@@ -1,0 +1,5 @@
+serving:
+  default_top_n: 10
+  latency_budget_ms: 300
+  enable_latency_logging: true
+  log_slow_requests_ms: 250
