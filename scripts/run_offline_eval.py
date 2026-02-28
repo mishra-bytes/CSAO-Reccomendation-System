@@ -3,12 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-import pandas as pd
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from common.io import load_table
 from evaluation.run_eval import evaluate_offline
 from scripts._utils import load_feature_tables, load_project_config, load_unified_tables
 
@@ -20,13 +19,17 @@ def main() -> None:
 
     pred_path = Path(ranking_cfg.get("validation_predictions_path", processed_dir / "validation_predictions.parquet"))
     meta_path = Path(ranking_cfg.get("query_meta_path", processed_dir / "query_meta.parquet"))
-    if not pred_path.exists():
-        raise FileNotFoundError(f"Validation predictions not found: {pred_path}. Run train_ranker first.")
-    if not meta_path.exists():
-        raise FileNotFoundError(f"Query meta not found: {meta_path}. Run train_ranker first.")
-
-    predictions = pd.read_parquet(pred_path)
-    query_meta = pd.read_parquet(meta_path)
+    try:
+        predictions = load_table(pred_path, required=True)
+        query_meta = load_table(meta_path, required=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            "Offline eval inputs missing. Run in order:\n"
+            "1) python scripts/build_unified_data.py\n"
+            "2) python scripts/build_features.py\n"
+            "3) python scripts/train_ranker.py\n"
+            f"Details: {exc}"
+        ) from exc
     unified = load_unified_tables(str(processed_dir))
     features = load_feature_tables(str(processed_dir))
 

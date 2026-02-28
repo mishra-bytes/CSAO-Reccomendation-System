@@ -23,10 +23,37 @@ class CSAORanker:
     ) -> None:
         self.model = joblib.load(model_path)
         self.feature_columns = json.loads(Path(feature_columns_path).read_text(encoding="utf-8"))
-        self.user_index = user_features.set_index("user_id", drop=False)
-        self.item_index = item_features.set_index("item_id", drop=False)
+        self.user_index = user_features.drop_duplicates("user_id").set_index("user_id", drop=False)
+        self.item_index = item_features.drop_duplicates("item_id").set_index("item_id", drop=False)
         self.items = items[["item_id", "item_category", "item_price"]].drop_duplicates("item_id")
         self.comp_lookup = complementarity_lookup
+
+    @staticmethod
+    def _as_series(row: pd.Series | pd.DataFrame) -> pd.Series:
+        if isinstance(row, pd.DataFrame):
+            return row.iloc[0]
+        return row
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        if isinstance(value, pd.Series):
+            if value.empty:
+                return 0.0
+            value = value.iloc[0]
+        if isinstance(value, np.ndarray):
+            if value.size == 0:
+                return 0.0
+            value = value.reshape(-1)[0]
+        if isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                return 0.0
+            value = value[0]
+        if pd.isna(value):
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _complement_agg(self, cart_items: list[str], candidate_item: str) -> tuple[float, float, float, float]:
         lifts: list[float] = []
@@ -63,15 +90,17 @@ class CSAORanker:
         )
 
         if user_id in self.user_index.index:
-            for col, value in self.user_index.loc[user_id].items():
+            user_row = self._as_series(self.user_index.loc[user_id])
+            for col, value in user_row.items():
                 if col == "user_id":
                     continue
-                row[f"user__{col}"] = float(value)
+                row[f"user__{col}"] = self._to_float(value)
         if candidate_item in self.item_index.index:
-            for col, value in self.item_index.loc[candidate_item].items():
+            item_row = self._as_series(self.item_index.loc[candidate_item])
+            for col, value in item_row.items():
                 if col in {"item_id", "item_category"}:
                     continue
-                row[f"item__{col}"] = float(value)
+                row[f"item__{col}"] = self._to_float(value)
 
         for col in self.feature_columns:
             row.setdefault(col, 0.0)
@@ -101,4 +130,3 @@ class CSAORanker:
         ]
         out = sorted(out, key=lambda x: x["rank_score"], reverse=True)
         return out[:top_n]
-

@@ -9,6 +9,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from common.io import save_table
 from ranking.training.dataset import TrainingData, build_training_dataset
 
 
@@ -126,5 +127,5 @@ def save_training_outputs(outputs: TrainingOutputs, config: dict[str, Any]) -> N
 
     joblib.dump(outputs.model, model_path)
     cols_path.write_text(json.dumps(outputs.feature_columns, indent=2), encoding="utf-8")
-    outputs.validation_predictions.to_parquet(val_pred_path, index=False)
-    outputs.query_meta.to_parquet(query_meta_path, index=False)
+    save_table(outputs.validation_predictions, val_pred_path, index=False)
+    save_table(outputs.query_meta, query_meta_path, index=False)

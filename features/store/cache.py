@@ -5,16 +5,12 @@ from typing import Optional
 
 import pandas as pd
 
+from common.io import load_table, save_table
+
 
 def save_df(df: pd.DataFrame, path: str | Path) -> None:
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out, index=False)
+    save_table(df, path, index=False)
 
 
 def load_df(path: str | Path) -> Optional[pd.DataFrame]:
-    p = Path(path)
-    if not p.exists():
-        return None
-    return pd.read_parquet(p)
-
+    return load_table(path, required=False)

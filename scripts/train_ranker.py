@@ -16,8 +16,21 @@ def main() -> None:
     config = load_project_config()
     processed_dir = config.get("paths", {}).get("processed_dir", "data/processed")
 
-    unified = load_unified_tables(processed_dir)
-    features = load_feature_tables(processed_dir)
+    try:
+        unified = load_unified_tables(processed_dir)
+        features = load_feature_tables(processed_dir)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            "Training inputs missing. Run in order:\n"
+            "1) python scripts/build_unified_data.py\n"
+            "2) python scripts/build_features.py\n"
+            f"Details: {exc}"
+        ) from exc
+
+    if features["user_features"].empty or features["item_features"].empty:
+        raise ValueError(
+            "Feature tables are empty. Run `python scripts/build_features.py` and ensure source tables are generated."
+        )
     comp_lookup = build_complementarity_lookup(features["complementarity"])
 
     outputs = train_lgbm_ranker(

@@ -19,6 +19,37 @@ class TrainingData:
     query_meta: pd.DataFrame
 
 
+def _as_series(row: pd.Series | pd.DataFrame | None) -> pd.Series | None:
+    if row is None:
+        return None
+    if isinstance(row, pd.DataFrame):
+        if row.empty:
+            return None
+        return row.iloc[0]
+    return row
+
+
+def _to_float(value: Any) -> float:
+    if isinstance(value, pd.Series):
+        if value.empty:
+            return 0.0
+        value = value.iloc[0]
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return 0.0
+        value = value.reshape(-1)[0]
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return 0.0
+        value = value[0]
+    if pd.isna(value):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _agg_complementarity(
     cart_items: list[str],
     candidate_item: str,
@@ -60,16 +91,19 @@ def _build_feature_row(
         }
     )
 
+    user_feature_row = _as_series(user_feature_row)
+    item_feature_row = _as_series(item_feature_row)
+
     if user_feature_row is not None:
         for col, value in user_feature_row.items():
             if col == "user_id":
                 continue
-            feat_num[f"user__{col}"] = float(value)
+            feat_num[f"user__{col}"] = _to_float(value)
     if item_feature_row is not None:
         for col, value in item_feature_row.items():
             if col in {"item_id", "item_category"}:
                 continue
-            feat_num[f"item__{col}"] = float(value)
+            feat_num[f"item__{col}"] = _to_float(value)
 
     # TODO(prod): include device, distance, ETA, and current-time context.
     feat_num["ctx_restaurant_hash"] = float(abs(hash(str(restaurant_id))) % 1000)
@@ -92,8 +126,8 @@ def build_training_dataset(
     random_state = int(config.get("ranking", {}).get("random_state", 42))
     rng = np.random.default_rng(random_state)
 
-    user_index = user_features.set_index("user_id", drop=False)
-    item_index = item_features.set_index("item_id", drop=False)
+    user_index = user_features.drop_duplicates("user_id").set_index("user_id", drop=False)
+    item_index = item_features.drop_duplicates("item_id").set_index("item_id", drop=False)
 
     rest_item_pool = (
         order_items.merge(orders[["order_id", "restaurant_id"]], on="order_id", how="left")

@@ -4,6 +4,7 @@ from typing import Any
 
 import pandas as pd
 
+from common.io import save_table
 from data.preprocessing import preprocess_order_rows
 from data.schemas import SCHEMAS, ensure_columns, ensure_not_null
 
@@ -59,10 +60,10 @@ def _build_order_items(order_rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_items(order_rows: pd.DataFrame) -> pd.DataFrame:
-    items = (
-        order_rows.groupby(["item_id", "item_name", "item_type"], as_index=False)
-        .agg(item_price=("price", "median"))
-        .rename(columns={"item_type": "item_category"})
+    items = order_rows.groupby("item_id", as_index=False).agg(
+        item_name=("item_name", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+        item_category=("item_type", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+        item_price=("price", "median"),
     )
     return items
 
@@ -132,6 +133,6 @@ def save_unified_tables(tables: dict[str, pd.DataFrame], processed_dir: str) -> 
         if name == "recipe_embeddings":
             if df.empty:
                 continue
-            df.to_parquet(out_dir / "recipe_embeddings.parquet", index=False)
+            save_table(df, out_dir / "recipe_embeddings.parquet", index=False)
             continue
-        df.to_parquet(out_dir / f"{name}.parquet", index=False)
+        save_table(df, out_dir / f"{name}.parquet", index=False)
