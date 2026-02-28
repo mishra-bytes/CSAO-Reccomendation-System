@@ -47,6 +47,14 @@ def main() -> None:
     print("\nSegment Metrics:")
     print(result["segments"].to_string(index=False))
 
+    if "business_impact" in result:
+        print("\nBusiness Impact Proxy Metrics:")
+        for key, value in result["business_impact"].items():
+            if isinstance(value, float):
+                print(f"- {key}: {value:.4f}")
+            else:
+                print(f"- {key}: {value}")
+
 
 if __name__ == "__main__":
     main()

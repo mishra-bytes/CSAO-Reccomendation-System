@@ -190,6 +190,56 @@ class CSAORanker:
                 if col_idx >= 0 and vi < len(item_vec):
                     X[ri, col_idx] = item_vec[vi]
 
+        # 7) CSAO intelligence features — cart completion & complement confidence
+        from features.cart_features import _cart_completeness_score, _missing_categories
+
+        # Build cart category set once
+        item_lookup_idx = self.items.set_index("item_id", drop=False)
+        cart_categories: set[str] = set()
+        for ci in cart_items:
+            if ci in item_lookup_idx.index:
+                r = item_lookup_idx.loc[ci]
+                cat_val = str(r["item_category"]) if isinstance(r, pd.Series) else str(r.iloc[0]["item_category"])
+                if cat_val != "unknown":
+                    cart_categories.add(cat_val)
+
+        completeness_before = _cart_completeness_score(cart_categories)
+        _, missing_ratio_before = _missing_categories(cart_categories)
+
+        # Per-candidate: completeness_delta, fills_gap, complement_confidence, new_category
+        completeness_delta = np.zeros(n, dtype=np.float64)
+        fills_gap = np.zeros(n, dtype=np.float64)
+        complement_conf = np.zeros(n, dtype=np.float64)
+        new_category = np.zeros(n, dtype=np.float64)
+
+        for ri, cand_id in enumerate(candidate_ids):
+            cand_cat = "unknown"
+            if cand_id in item_lookup_idx.index:
+                cr = item_lookup_idx.loc[cand_id]
+                cand_cat = str(cr["item_category"]) if isinstance(cr, pd.Series) else str(cr.iloc[0]["item_category"])
+
+            after_set = cart_categories | {cand_cat}
+            comp_after = _cart_completeness_score(after_set)
+            completeness_delta[ri] = comp_after - completeness_before
+
+            _, mr_after = _missing_categories(after_set)
+            fills_gap[ri] = float(mr_after < missing_ratio_before)
+
+            n_lift = sum(1 for ci in cart_items if self.comp_lookup.get((ci, cand_id), (0.0, 0.0))[0] > 0)
+            complement_conf[ri] = n_lift / max(len(cart_items), 1)
+
+            new_category[ri] = float(cand_cat not in cart_categories and cand_cat != "unknown")
+
+        for name, arr in [
+            ("completeness_delta", completeness_delta),
+            ("fills_meal_gap", fills_gap),
+            ("complement_confidence", complement_conf),
+            ("candidate_new_category", new_category),
+        ]:
+            idx = self._col_to_idx.get(name, -1)
+            if idx >= 0:
+                X[:, idx] = arr
+
         return X
 
     def rank(

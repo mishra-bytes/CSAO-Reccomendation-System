@@ -21,12 +21,20 @@ feature_build:
 
 candidate_generation:
   total_candidates: 200
-  cooccurrence_k: 120
-  popularity_k: 80
-  category_k: 60
+  cooccurrence_k: 100
+  popularity_k: 60
+  category_k: 50
+  session_covisit_k: 60
+  meal_gap_k: 40
+  # Retriever fusion weights (must sum to ~1.0)
+  w_cooccurrence: 0.40
+  w_session: 0.20
+  w_meal_gap: 0.15
+  w_category: 0.15
+  w_popularity: 0.10
 
 ranking:
-  negative_samples_per_positive: 4
+  negative_samples_per_positive: 5
   random_state: 42
   eval_k: 10
   model_path: models/lgbm_ranker.joblib
@@ -34,6 +42,13 @@ ranking:
   validation_predictions_path: data/processed/validation_predictions.parquet
   query_meta_path: data/processed/query_meta.parquet
 
+train:
+  validation_fraction: 0.2
+  temporal_split: true
+  min_queries_for_training: 50
+
 serving:
   default_top_n: 10
   latency_budget_ms: 300
+  enable_latency_logging: true
+  log_slow_requests_ms: 250
