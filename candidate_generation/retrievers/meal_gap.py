@@ -38,7 +38,12 @@ class MealGapRetriever:
 
         # Build (restaurant, category) → [items by popularity]
         merged = order_items.merge(orders[["order_id", "restaurant_id"]], on="order_id", how="left")
-        merged = merged.merge(items[["item_id", "item_category"]], on="item_id", how="left")
+        if "item_category" not in merged.columns:
+            merged = merged.merge(
+                items[["item_id", "item_category"]].drop_duplicates("item_id"),
+                on="item_id",
+                how="left",
+            )
         merged["item_category"] = merged["item_category"].fillna("unknown").astype(str)
 
         pop = (

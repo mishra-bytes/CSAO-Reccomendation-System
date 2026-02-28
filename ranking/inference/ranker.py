@@ -260,7 +260,10 @@ class CSAORanker:
         X = self._build_feature_matrix(user_id, restaurant_id, cart_items, ids, cand_scores)
 
         # Single batched prediction call
-        scores = self.model.predict(X)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            scores = self.model.predict(X)
 
         # Fast top-N via argpartition instead of full sort when n_candidates >> top_n
         n = len(scores)

@@ -92,7 +92,13 @@ def build_cart_feature_vector(
     prices = cart_items["item_price"].fillna(0.0)
     cart_value = float(prices.sum())
     cart_avg_price = float(prices.mean()) if cart_size > 0 else 0.0
-    cart_price_std = float(prices.std()) if cart_size > 1 else 0.0
+    if cart_size > 1:
+        try:
+            cart_price_std = float(prices.astype(float).std(ddof=0))
+        except Exception:
+            cart_price_std = 0.0
+    else:
+        cart_price_std = 0.0
     last_added_item = str(cart_item_ids[-1])
     session_position = float(len(cart_item_ids))
 
