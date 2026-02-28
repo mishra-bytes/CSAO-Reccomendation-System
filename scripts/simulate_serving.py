@@ -20,9 +20,26 @@ def main() -> None:
     processed_dir = config.get("paths", {}).get("processed_dir", "data/processed")
     ranking_cfg = config.get("ranking", {})
 
-    unified = load_unified_tables(processed_dir)
-    feats = load_feature_tables(processed_dir)
+    try:
+        unified = load_unified_tables(processed_dir)
+        feats = load_feature_tables(processed_dir)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            "Serving inputs missing. Run in order:\n"
+            "1) python scripts/build_unified_data.py\n"
+            "2) python scripts/build_features.py\n"
+            "3) python scripts/train_ranker.py\n"
+            f"Details: {exc}"
+        ) from exc
+
     comp_lookup = build_complementarity_lookup(feats["complementarity"])
+    model_path = Path(ranking_cfg.get("model_path", "models/lgbm_ranker.joblib"))
+    feature_cols_path = Path(ranking_cfg.get("feature_columns_path", "models/feature_columns.json"))
+    if not model_path.exists() or not feature_cols_path.exists():
+        raise FileNotFoundError(
+            "Model artifacts missing. Run `python scripts/train_ranker.py` first.\n"
+            f"Checked: {model_path}, {feature_cols_path}"
+        )
 
     candidate_generator = CandidateGenerator(
         complementarity=feats["complementarity"],
@@ -33,8 +50,8 @@ def main() -> None:
         config=config,
     )
     ranker = CSAORanker(
-        model_path=ranking_cfg.get("model_path", "models/lgbm_ranker.joblib"),
-        feature_columns_path=ranking_cfg.get("feature_columns_path", "models/feature_columns.json"),
+        model_path=str(model_path),
+        feature_columns_path=str(feature_cols_path),
         user_features=feats["user_features"],
         item_features=feats["item_features"],
         items=unified["items"],

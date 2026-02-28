@@ -2,14 +2,16 @@ lightgbm:
   objective: lambdarank
   metric: ndcg
   boosting_type: gbdt
-  num_leaves: 63
+  num_leaves: 31
   learning_rate: 0.05
-  n_estimators: 250
-  min_child_samples: 20
+  n_estimators: 120
+  min_child_samples: 10
   subsample: 0.9
   colsample_bytree: 0.8
   reg_alpha: 0.0
   reg_lambda: 0.0
+  force_col_wise: true
+  verbosity: -1
 
 train:
   validation_fraction: 0.2

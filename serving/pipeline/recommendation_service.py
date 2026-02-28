@@ -26,12 +26,21 @@ class RecommendationService:
         self.default_top_n = int(serving_cfg.get("default_top_n", 10))
         self.latency_budget_ms = int(serving_cfg.get("latency_budget_ms", 300))
 
+        # Pre-index user features by user_id for O(1) lookup instead of O(n) scan
+        self._user_index = (
+            artifacts.user_features.drop_duplicates("user_id")
+            .set_index("user_id", drop=False)
+        )
+
+        # Latency history for p95/p99 tracking
+        self._latency_history: list[float] = []
+
     def recommend(self, req: RecommendationRequest) -> RecommendationResponse:
         timer = LatencyTracker()
 
         with timer.track("feature_fetch"):
-            # TODO(prod): fetch online features from Redis/feature store.
-            _ = self.artifacts.user_features[self.artifacts.user_features["user_id"] == req.user_id]
+            # O(1) index lookup instead of O(n) boolean mask
+            _ = self._user_index.loc[req.user_id] if req.user_id in self._user_index.index else None
 
         with timer.track("candidate_generation"):
             candidates = self.artifacts.candidate_generator.generate(
@@ -49,8 +58,10 @@ class RecommendationService:
             )
 
         lat = timer.finalize()
-        # TODO(prod): wire structured logs and tracing IDs.
-        if lat.get("total", 0.0) > self.latency_budget_ms:
+        total_ms = lat.get("total", 0.0)
+        self._latency_history.append(total_ms)
+
+        if total_ms > self.latency_budget_ms:
             ranked = ranked[: max(3, min(len(ranked), req.top_n))]
 
         return RecommendationResponse(
@@ -59,3 +70,17 @@ class RecommendationService:
             recommendations=ranked,
             latency_ms=lat,
         )
+
+    def get_latency_stats(self) -> dict[str, float]:
+        """Return p50/p95/p99 latency from request history."""
+        import numpy as np
+        if not self._latency_history:
+            return {}
+        arr = np.array(self._latency_history)
+        return {
+            "p50_ms": float(np.percentile(arr, 50)),
+            "p95_ms": float(np.percentile(arr, 95)),
+            "p99_ms": float(np.percentile(arr, 99)),
+            "mean_ms": float(arr.mean()),
+            "n_requests": len(self._latency_history),
+        }

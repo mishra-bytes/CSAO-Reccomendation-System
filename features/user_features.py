@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from common.feature_names import normalize_feature_name
+
 
 def build_user_features(
     users: pd.DataFrame,
@@ -30,7 +32,7 @@ def build_user_features(
         .astype(float)
     )
     cuisine_share = cuisine_pivot.div(cuisine_pivot.sum(axis=1).replace(0.0, 1.0), axis=0)
-    cuisine_share.columns = [f"user_cuisine_share__{c}" for c in cuisine_share.columns]
+    cuisine_share.columns = [f"user_cuisine_share__{normalize_feature_name(c)}" for c in cuisine_share.columns]
     cuisine_share = cuisine_share.reset_index()
 
     item_price = items[["item_id", "item_price"]].drop_duplicates("item_id")
@@ -57,4 +59,3 @@ def build_user_features(
     numeric_cols = [c for c in feats.columns if c != "user_id"]
     feats[numeric_cols] = feats[numeric_cols].replace([np.inf, -np.inf], 0.0)
     return feats
-

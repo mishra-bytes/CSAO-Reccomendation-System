@@ -5,6 +5,7 @@ import pandas as pd
 
 
 def build_item_features(items: pd.DataFrame, order_items: pd.DataFrame) -> pd.DataFrame:
+    items = items.drop_duplicates("item_id").copy()
     popularity = (
         order_items.groupby("item_id")["order_id"]
         .nunique()
@@ -28,4 +29,3 @@ def build_item_features(items: pd.DataFrame, order_items: pd.DataFrame) -> pd.Da
     numeric_cols = [c for c in out.columns if c not in {"item_id", "item_category"}]
     out[numeric_cols] = out[numeric_cols].replace([np.inf, -np.inf], 0.0).fillna(0.0)
     return out
-
