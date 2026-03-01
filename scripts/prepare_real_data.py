@@ -483,6 +483,9 @@ def prepare_indian_takeaway(takeaway_dir: Path, indian_food_dir: Path | None) ->
 
     for idx, row in raw.iterrows():
         oid = str(row[order_col])
+        # Clean float artifacts like "10000.0" → "10000"
+        if oid.endswith(".0"):
+            oid = oid[:-2]
         item_name = str(row[item_col])
 
         qty = int(row[qty_col]) if qty_col and pd.notna(row.get(qty_col)) else 1

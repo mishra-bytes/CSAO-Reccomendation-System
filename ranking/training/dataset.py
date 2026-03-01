@@ -7,7 +7,62 @@ import numpy as np
 import pandas as pd
 
 from common.feature_names import normalize_feature_columns, normalize_feature_name
-from features.cart_features import build_cart_feature_vector
+from features.cart_features import build_cart_feature_vector, _cart_completeness_score, _missing_categories
+from collections import Counter
+
+
+def _fast_cart_features(
+    cart_item_ids: list[str],
+    item_cat_dict: dict[str, str],
+    item_price_dict: dict[str, float],
+) -> dict[str, float]:
+    """Ultra-fast cart feature computation using pure dicts (no DataFrame ops)."""
+    if not cart_item_ids:
+        return {
+            "cart_size": 0.0, "cart_value": 0.0, "session_position": 0.0,
+            "cart_completeness": 0.0, "cart_missing_cats": 0.0, "cart_missing_cat_ratio": 0.0,
+            "cart_unique_categories": 0.0, "cart_avg_price": 0.0, "cart_price_std": 0.0,
+            "cart_has_main": 0.0, "cart_has_beverage": 0.0, "cart_has_dessert": 0.0,
+            "cart_has_starter": 0.0,
+        }
+
+    cart_size = float(len(cart_item_ids))
+    prices = [item_price_dict.get(ci, 0.0) for ci in cart_item_ids]
+    cart_value = sum(prices)
+    cart_avg_price = cart_value / cart_size if cart_size > 0 else 0.0
+    if cart_size > 1:
+        mean_p = cart_value / cart_size
+        cart_price_std = (sum((p - mean_p) ** 2 for p in prices) / cart_size) ** 0.5
+    else:
+        cart_price_std = 0.0
+
+    categories = [item_cat_dict.get(ci, "unknown") for ci in cart_item_ids]
+    cat_counts = Counter(categories)
+    cat_set = set(categories) - {"unknown"}
+    total = max(sum(cat_counts.values()), 1)
+
+    completeness = _cart_completeness_score(cat_set)
+    n_missing, missing_ratio = _missing_categories(cat_set)
+
+    features: dict[str, float] = {
+        "cart_size": cart_size,
+        "cart_value": cart_value,
+        "cart_avg_price": cart_avg_price,
+        "cart_price_std": cart_price_std,
+        "session_position": cart_size,
+        "cart_completeness": completeness,
+        "cart_missing_cats": float(n_missing),
+        "cart_missing_cat_ratio": missing_ratio,
+        "cart_unique_categories": float(len(cat_set)),
+        "cart_has_main": float("main_course" in cat_set),
+        "cart_has_beverage": float("beverage" in cat_set),
+        "cart_has_dessert": float("dessert" in cat_set),
+        "cart_has_starter": float("starter" in cat_set),
+    }
+    for cat, cnt in cat_counts.most_common(12):
+        safe_cat = normalize_feature_name(cat)
+        features[f"cart_cat_share__{safe_cat}"] = cnt / total
+    return features
 
 
 @dataclass
@@ -77,6 +132,8 @@ def _build_feature_row(
     item_feature_row: pd.Series | None,
     item_lookup: pd.DataFrame,
     comp_lookup: dict[tuple[str, str], tuple[float, float]],
+    item_cat_dict: dict[str, str] | None = None,
+    item_price_dict: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     feat = build_cart_feature_vector(cart_items, item_lookup)
     feat_num = {k: float(v) for k, v in feat.items() if isinstance(v, (float, int, np.floating))}
@@ -87,7 +144,6 @@ def _build_feature_row(
     item_feature_row = _as_series(item_feature_row)
     item_popularity = 0.0 if item_feature_row is None else _to_float(item_feature_row.get("item_popularity", 0.0))
     if candidate_score is None:
-        # Avoid label leakage: the score should come from item/cart signals, not from target label.
         candidate_score = (
             0.65 * max_lift
             + 0.25 * mean_lift
@@ -106,23 +162,28 @@ def _build_feature_row(
         }
     )
 
-    # --- CSAO-specific candidate-level features ---
-    from features.cart_features import _cart_completeness_score, _missing_categories  # noqa: local import
-
-    # Build category set for current cart
-    lookup_idx = item_lookup.set_index("item_id", drop=False)
-    cart_categories: set[str] = set()
-    for ci in cart_items:
-        if ci in lookup_idx.index:
-            row_ci = lookup_idx.loc[ci]
-            cat_val = str(row_ci["item_category"]) if isinstance(row_ci, pd.Series) else str(row_ci.iloc[0]["item_category"])
+    # --- CSAO-specific candidate-level features (dict-based for speed) ---
+    # Use dict lookups instead of DataFrame .loc for categories
+    if item_cat_dict is not None:
+        cart_categories: set[str] = set()
+        for ci in cart_items:
+            cat_val = item_cat_dict.get(ci, "unknown")
             if cat_val != "unknown":
                 cart_categories.add(cat_val)
-
-    cand_cat = "unknown"
-    if candidate_item in lookup_idx.index:
-        cand_row = lookup_idx.loc[candidate_item]
-        cand_cat = str(cand_row["item_category"]) if isinstance(cand_row, pd.Series) else str(cand_row.iloc[0]["item_category"])
+        cand_cat = item_cat_dict.get(candidate_item, "unknown")
+    else:
+        lookup_idx = item_lookup if item_lookup.index.name == "item_id" else item_lookup.set_index("item_id", drop=False)
+        cart_categories = set()
+        for ci in cart_items:
+            if ci in lookup_idx.index:
+                row_ci = lookup_idx.loc[ci]
+                cat_val = str(row_ci["item_category"]) if isinstance(row_ci, pd.Series) else str(row_ci.iloc[0]["item_category"])
+                if cat_val != "unknown":
+                    cart_categories.add(cat_val)
+        cand_cat = "unknown"
+        if candidate_item in lookup_idx.index:
+            cand_row = lookup_idx.loc[candidate_item]
+            cand_cat = str(cand_row["item_category"]) if isinstance(cand_row, pd.Series) else str(cand_row.iloc[0]["item_category"])
 
     # Does adding this candidate improve meal completeness?
     completeness_before = _cart_completeness_score(cart_categories)
@@ -177,40 +238,37 @@ def _build_negative_sampling_weights(
 ) -> np.ndarray:
     """Build sampling weights favouring harder negatives.
 
-    Strategy (multi-signal):
-    1. Popularity-weighted: popular items are harder negatives (the model
-       must learn to distinguish popular-but-irrelevant from relevant).
-    2. Same-category boost: items in the same category as the positive
-       are near-miss hard negatives.
-    3. Co-occurrence proximity: items with non-zero lift to any cart item
-       are partially relevant and thus harder negatives.
-
-    Weights are combined as:  pop * (1 + same_cat_boost + cooc_boost)
+    Vectorised strategy:
+    1. Popularity-weighted: popular items are harder negatives.
+    2. Same-category boost (2x): near-miss hard negatives.
+    3. Co-occurrence proximity boost (capped).
     """
     n = len(item_pool)
-    weights = np.ones(n, dtype=np.float64)
 
+    # Vectorised popularity weights
+    pop_arr = np.array([item_popularity.get(item, 0.0) for item in item_pool], dtype=np.float64)
+    weights = np.log1p(np.maximum(pop_arr, 0.0)) + 1.0
+
+    # Same-category boost
     pos_cat = item_categories.get(positive_item, "unknown")
-    cart_set = set(cart_items)
+    if pos_cat != "unknown":
+        cat_arr = np.array([1 if item_categories.get(item, "unknown") == pos_cat else 0 for item in item_pool])
+        weights *= (1.0 + cat_arr)  # 2x for same category
 
-    for i, item in enumerate(item_pool):
-        # Popularity component: log-scaled to avoid extreme skew
-        pop = item_popularity.get(item, 0.0)
-        weights[i] = np.log1p(max(pop, 0.0)) + 1.0
+    # Co-occurrence boost (sampling a single cart item for speed)
+    if cart_items and comp_lookup:
+        cart_sample = cart_items[:3]  # check at most 3 cart items
+        for ci in cart_sample:
+            boosts = np.array([
+                min(comp_lookup.get((ci, item), (0.0, 0.0))[0], 5.0)
+                for item in item_pool
+            ])
+            mask = boosts > 0.0
+            if mask.any():
+                weights[mask] *= (1.0 + 0.5 * boosts[mask])
+                break
 
-        # Same-category hard negative boost (2x)
-        cat = item_categories.get(item, "unknown")
-        if cat == pos_cat and cat != "unknown":
-            weights[i] *= 2.0
-
-        # Co-occurrence proximity boost — items co-occurring with cart
-        for ci in cart_set:
-            lift, _ = comp_lookup.get((ci, item), (0.0, 0.0))
-            if lift > 0.0:
-                weights[i] *= (1.0 + 0.5 * min(lift, 5.0))
-                break  # one boost is enough
-
-    # Normalise to probability distribution
+    # Normalise
     total = weights.sum()
     if total > 0:
         weights /= total
@@ -229,6 +287,8 @@ def build_training_dataset(
     orders = unified["orders"]
     order_items = unified["order_items"]
     item_lookup = unified["items"][["item_id", "item_category", "item_price"]].drop_duplicates("item_id")
+    # Pre-index for O(1) lookup — avoids re-indexing on every feature row call
+    item_lookup_indexed = item_lookup.set_index("item_id", drop=False)
 
     n_neg = int(config.get("ranking", {}).get("negative_samples_per_positive", 4))
     random_state = int(config.get("ranking", {}).get("random_state", 42))
@@ -247,11 +307,29 @@ def build_training_dataset(
         unified["items"].drop_duplicates("item_id").set_index("item_id")["item_category"].astype(str).to_dict()
     )
 
-    rest_item_pool = (
+    _raw_pool = (
         order_items.merge(orders[["order_id", "restaurant_id"]], on="order_id", how="left")
         .groupby("restaurant_id")["item_id"]
         .apply(lambda s: list(set(s.astype(str).tolist())))
         .to_dict()
+    )
+    # Pre-cap restaurant pools to avoid 32K-item neg-pool filtering
+    _MAX_POOL = 500
+    rest_item_pool: dict[str, list[str]] = {}
+    for rid, pool in _raw_pool.items():
+        if len(pool) > _MAX_POOL:
+            # Keep most popular items in each pool
+            scored = sorted(pool, key=lambda i: item_popularity.get(i, 0.0), reverse=True)
+            rest_item_pool[rid] = scored[:_MAX_POOL]
+        else:
+            rest_item_pool[rid] = pool
+    del _raw_pool
+    print(f"[dataset] Restaurant pools: {len(rest_item_pool)} restaurants, max pool={max(len(v) for v in rest_item_pool.values()) if rest_item_pool else 0}")
+
+    # Pre-build dict lookups for fast feature computation (avoids DataFrame .loc per row)
+    item_cat_dict: dict[str, str] = item_categories  # already built above
+    item_price_dict: dict[str, float] = (
+        unified["items"].drop_duplicates("item_id").set_index("item_id")["item_price"].astype(float).to_dict()
     )
 
     rows: list[dict[str, Any]] = []
@@ -268,8 +346,17 @@ def build_training_dataset(
         sampled_order_ids = set(rng.choice(unique_order_ids, size=max_training_orders, replace=False))
         oi = oi[oi["order_id"].isin(sampled_order_ids)]
         print(f"[dataset] Sampled {max_training_orders}/{len(unique_order_ids)} orders for training")
+    else:
+        print(f"[dataset] Using all {len(unique_order_ids)} orders for training")
 
-    for order_id, group in oi.groupby("order_id"):
+    order_groups = list(oi.groupby("order_id"))
+    total_orders = len(order_groups)
+    max_positions_per_order = 15  # Cap to prevent huge orders from dominating
+    print(f"[dataset] Building features for {total_orders} orders (max {max_positions_per_order} positions/order) ...")
+
+    for oi_idx, (order_id, group) in enumerate(order_groups):
+        if oi_idx % 500 == 0:
+            print(f"[dataset] Progress: {oi_idx}/{total_orders} orders ({oi_idx*100//max(total_orders,1)}%), {len(rows)} rows", flush=True)
         seq = group.sort_values("position")
         item_seq = seq["item_id"].astype(str).tolist()
         user_id = str(seq["user_id"].iloc[0])
@@ -279,33 +366,103 @@ def build_training_dataset(
             continue
 
         pool = rest_item_pool.get(restaurant_id, [])
-        for pos in range(1, len(item_seq)):
+        user_row = user_index.loc[user_id] if user_id in user_index.index else None
+        # Pre-convert user features to dict once per order
+        user_feat_dict: dict[str, float] = {}
+        if user_row is not None:
+            ur = _as_series(user_row)
+            if ur is not None:
+                for col, value in ur.items():
+                    if col == "user_id":
+                        continue
+                    user_feat_dict[f"user__{col}"] = _to_float(value)
+
+        for pos in range(1, min(len(item_seq), max_positions_per_order + 1)):
             cart = item_seq[:pos]
             positive_item = item_seq[pos]
 
             qid = f"{order_id}__{pos}"
-            user_row = user_index.loc[user_id] if user_id in user_index.index else None
-            pos_item_row = item_index.loc[positive_item] if positive_item in item_index.index else None
-            pos_features = _build_feature_row(
-                user_id=user_id,
-                restaurant_id=restaurant_id,
-                cart_items=cart,
-                candidate_item=positive_item,
-                candidate_score=None,
-                user_feature_row=user_row,
-                item_feature_row=pos_item_row,
-                item_lookup=item_lookup,
-                comp_lookup=comp_lookup,
-            )
+            # Compute cart features ONCE per position (shared across positive + all negatives)
+            cart_feat_num = _fast_cart_features(cart, item_cat_dict, item_price_dict)
+
+            # Pre-compute cart categories once per position
+            cart_categories: set[str] = set()
+            for ci in cart:
+                cat_val = item_cat_dict.get(ci, "unknown")
+                if cat_val != "unknown":
+                    cart_categories.add(cat_val)
+
+            ctx_feats = {
+                "ctx_restaurant_hash": float(abs(hash(str(restaurant_id))) % 1000),
+                "ctx_user_hash": float(abs(hash(str(user_id))) % 1000),
+            }
+
+            def _build_candidate_features(candidate_item: str) -> dict[str, Any]:
+                """Build features for a single candidate, reusing cached cart features."""
+                feat_num = dict(cart_feat_num)  # shallow copy of cart features
+                feat_num.update(user_feat_dict)
+                feat_num.update(ctx_feats)
+
+                # Complementarity features
+                max_lift, mean_lift, max_pmi, mean_pmi = _agg_complementarity(cart, candidate_item, comp_lookup)
+
+                item_row = item_index.loc[candidate_item] if candidate_item in item_index.index else None
+                item_row_s = _as_series(item_row)
+                item_pop = 0.0 if item_row_s is None else _to_float(item_row_s.get("item_popularity", 0.0))
+                candidate_score = (
+                    0.65 * max_lift + 0.25 * mean_lift + 0.06 * max_pmi + 0.02 * mean_pmi
+                    + 0.01 * float(np.log1p(max(item_pop, 0.0)))
+                )
+                feat_num.update({
+                    "candidate_score": float(candidate_score),
+                    "comp_max_lift": max_lift,
+                    "comp_mean_lift": mean_lift,
+                    "comp_max_pmi": max_pmi,
+                    "comp_mean_pmi": mean_pmi,
+                })
+
+                # CSAO candidate-level features
+                cand_cat = item_cat_dict.get(candidate_item, "unknown")
+                completeness_before = _cart_completeness_score(cart_categories)
+                completeness_after = _cart_completeness_score(cart_categories | {cand_cat})
+                _, missing_ratio_before = _missing_categories(cart_categories)
+                _, missing_ratio_after = _missing_categories(cart_categories | {cand_cat})
+                n_with_lift = sum(1 for ci in cart if comp_lookup.get((ci, candidate_item), (0.0, 0.0))[0] > 0)
+                feat_num.update({
+                    "completeness_delta": completeness_after - completeness_before,
+                    "fills_meal_gap": float(missing_ratio_after < missing_ratio_before),
+                    "complement_confidence": n_with_lift / max(len(cart), 1),
+                    "candidate_new_category": float(cand_cat not in cart_categories and cand_cat != "unknown"),
+                })
+
+                # Item features
+                if item_row_s is not None:
+                    for col, value in item_row_s.items():
+                        if col in {"item_id", "item_category"}:
+                            continue
+                        feat_num[f"item__{col}"] = _to_float(value)
+
+                return {normalize_feature_name(k): v for k, v in feat_num.items()}
+
+            # Positive example
+            pos_features = _build_candidate_features(positive_item)
             rows.append(pos_features)
             y.append(1)
             query_ids.append(qid)
             candidate_items.append(positive_item)
             query_meta_rows.append({"query_id": qid, "user_id": user_id, "restaurant_id": restaurant_id, "positive_item": positive_item})
 
-            neg_pool = [i for i in pool if i not in set(cart) and i != positive_item]
+            # Fast set-based filtering instead of list comprehension
+            cart_set = set(cart)
+            cart_set.add(positive_item)
+            neg_pool = list(set(pool) - cart_set)
             if len(neg_pool) == 0:
                 continue
+
+            # Cap neg pool for tractability
+            max_neg_pool = 200
+            if len(neg_pool) > max_neg_pool:
+                neg_pool = list(rng.choice(neg_pool, size=max_neg_pool, replace=False))
 
             # Advanced negative sampling: popularity + same-category + co-occurrence weighted
             sampling_weights = _build_negative_sampling_weights(
@@ -320,18 +477,7 @@ def build_training_dataset(
             sampled = rng.choice(neg_pool, size=n_sample, replace=False, p=sampling_weights)
 
             for neg_item in sampled:
-                neg_row = item_index.loc[neg_item] if neg_item in item_index.index else None
-                neg_features = _build_feature_row(
-                    user_id=user_id,
-                    restaurant_id=restaurant_id,
-                    cart_items=cart,
-                    candidate_item=str(neg_item),
-                    candidate_score=None,
-                    user_feature_row=user_row,
-                    item_feature_row=neg_row,
-                    item_lookup=item_lookup,
-                    comp_lookup=comp_lookup,
-                )
+                neg_features = _build_candidate_features(str(neg_item))
                 rows.append(neg_features)
                 y.append(0)
                 query_ids.append(qid)

@@ -32,6 +32,11 @@ def _normalize_order_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
     frame["line_total"] = frame["price"] * frame["quantity"]
     frame["position"] = pd.to_numeric(frame["position"], errors="coerce").fillna(1).astype(int)
 
+    # Ensure all ID columns are clean strings (no float artifacts like ".0")
+    for id_col in ["order_id", "user_id", "restaurant_id", "item_id"]:
+        if id_col in frame.columns:
+            frame[id_col] = frame[id_col].astype(str).str.replace(r'\.0$', '', regex=True)
+
     frame["source"] = source
     return frame
 

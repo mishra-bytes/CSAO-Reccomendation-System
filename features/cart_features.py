@@ -85,7 +85,7 @@ def build_cart_feature_vector(
             "cart_has_starter": 0.0,
         }
 
-    lookup = item_lookup.set_index("item_id", drop=False)
+    lookup = item_lookup.set_index("item_id", drop=False) if item_lookup.index.name != "item_id" else item_lookup
     cart_items = lookup.reindex(cart_item_ids).fillna({"item_price": 0.0, "item_category": "unknown"})
 
     cart_size = float(len(cart_item_ids))
@@ -138,9 +138,15 @@ def build_cart_feature_vector(
 
 def build_cart_context_table(order_items: pd.DataFrame, items: pd.DataFrame, max_categories: int = 12) -> pd.DataFrame:
     item_meta = items[["item_id", "item_category", "item_price"]].drop_duplicates("item_id")
+    # Pre-index once to avoid repeated set_index calls
+    if item_meta.index.name != "item_id":
+        item_meta = item_meta.set_index("item_id", drop=False)
     rows: list[dict[str, Any]] = []
 
-    for order_id, group in order_items.groupby("order_id"):
+    n_orders = order_items["order_id"].nunique()
+    for i, (order_id, group) in enumerate(order_items.groupby("order_id")):
+        if i % 1000 == 0 and i > 0:
+            print(f"  [cart_context] {i}/{n_orders} orders processed ...", flush=True)
         seq = group.sort_values("position")
         item_ids = seq["item_id"].astype(str).tolist()
         for idx in range(1, len(item_ids)):

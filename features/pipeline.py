@@ -38,7 +38,16 @@ def build_feature_artifacts(unified: dict[str, pd.DataFrame], config: dict[str, 
     item_features = build_item_features(unified["items"], unified["order_items"])
     complementarity = compute_item_complementarity(unified["order_items"], min_support=min_item_support)
     category_affinity = compute_category_affinity(unified["order_items"], unified["items"], min_support=min_item_support)
-    cart_context = build_cart_context_table(unified["order_items"], unified["items"], max_categories=max_cart_categories)
+    # Sample orders for cart_context (this table is pre-computed for analytics only,
+    # training builds cart features on the fly). Cap at 5000 orders for tractability.
+    oi_for_cart = unified["order_items"]
+    max_cart_orders = 5000
+    unique_orders = oi_for_cart["order_id"].unique()
+    if len(unique_orders) > max_cart_orders:
+        import numpy as _np
+        sampled_orders = _np.random.default_rng(42).choice(unique_orders, max_cart_orders, replace=False)
+        oi_for_cart = oi_for_cart[oi_for_cart["order_id"].isin(set(sampled_orders))]
+    cart_context = build_cart_context_table(oi_for_cart, unified["items"], max_categories=max_cart_categories)
     comp_lookup = build_complementarity_lookup(complementarity)
 
     # --- LLM semantic embeddings ---
