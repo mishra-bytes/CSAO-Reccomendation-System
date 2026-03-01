@@ -10,6 +10,8 @@ paths:
   logs_dir: logs
 
 data:
+  # Set to false after running: python scripts/prepare_real_data.py
+  # Keep true if you want synthetic fallback when real data is missing
   allow_synthetic_fallback: true
   primary_orders_path: data/raw/restaurant_orders.csv
   mendeley_orders_path: data/raw/mendeley_orders.csv
