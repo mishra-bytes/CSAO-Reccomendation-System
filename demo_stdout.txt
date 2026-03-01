@@ -1,0 +1,13 @@
+[demo] Loading config and data artifacts...
+[demo]  .. loading tables
+[demo]  .. loading features
+[demo]  .. building comp lookup
+[demo]  .. building candidate generator
+[demo]  .. building ranker
+[demo]  .. building demo catalog
+[demo] Ready! 12228 items, 501 restaurants
+
+============================================================
+  CSAO Live Demo — http://localhost:8000
+============================================================
+

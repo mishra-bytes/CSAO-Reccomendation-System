@@ -16,3 +16,6 @@ data/cache/*
 models/
 logs/
 env/
+scripts/_test_catalog.py
+docs/Zomathon- Problem Statements & Guidelines.pdf
+docs/Zomathon- Problem Statements & Guidelines (1).pdf
