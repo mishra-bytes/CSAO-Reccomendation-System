@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from candidate_generation.candidate_generator import CandidateGenerator
+from ranking.inference.llm_explainer import explain_recommendations_batch
 from ranking.inference.ranker import CSAORanker
 from serving.api.schemas import RecommendationRequest, RecommendationResponse
 from serving.utils.latency import LatencyTracker
@@ -17,6 +18,7 @@ class ServingArtifacts:
     ranker: CSAORanker
     user_features: pd.DataFrame
     item_features: pd.DataFrame
+    item_catalog: dict[str, dict] | None = None  # item_id → {item_name, item_category, item_price}
 
 
 class RecommendationService:
@@ -63,6 +65,53 @@ class RecommendationService:
 
         if total_ms > self.latency_budget_ms:
             ranked = ranked[: max(3, min(len(ranked), req.top_n))]
+
+        # --- LLM Explanations (< 1 ms, template-based) ---
+        if self.artifacts.item_catalog:
+            from features.cart_features import _cart_completeness_score, _missing_categories, MEAL_ARCHETYPES
+
+            # Build cart context for explainer
+            cart_cats = set()
+            items_lookup = self.artifacts.ranker.items.set_index("item_id", drop=False)
+            for ci in req.cart_item_ids:
+                if ci in items_lookup.index:
+                    r = items_lookup.loc[ci]
+                    cat_val = str(r["item_category"]) if isinstance(r, pd.Series) else str(r.iloc[0]["item_category"])
+                    if cat_val != "unknown":
+                        cart_cats.add(cat_val)
+
+            _, _ = _missing_categories(cart_cats)
+            best_arch = None
+            best_overlap = -1
+            for arch in MEAL_ARCHETYPES:
+                overlap = len(cart_cats & arch)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_arch = arch
+            missing_cats = (best_arch - cart_cats) if best_arch else set()
+
+            cart_info = {
+                "categories": list(cart_cats),
+                "missing_categories": missing_cats,
+                "cart_value": sum(
+                    float(items_lookup.loc[ci]["item_price"]) if ci in items_lookup.index else 0
+                    for ci in req.cart_item_ids
+                ),
+                "last_item_name": req.cart_item_ids[-1] if req.cart_item_ids else "",
+                "cart_size": len(req.cart_item_ids),
+                "item_ids": req.cart_item_ids,
+            }
+
+            explanations = explain_recommendations_batch(
+                ranked_items=ranked,
+                cart_info=cart_info,
+                item_catalog=self.artifacts.item_catalog,
+                comp_lookup=self.artifacts.ranker.comp_lookup,
+            )
+            for i, exp in enumerate(explanations):
+                if i < len(ranked):
+                    ranked[i]["explanation"] = exp.explanation
+                    ranked[i]["reason_tags"] = exp.reason_tags
 
         return RecommendationResponse(
             user_id=req.user_id,

@@ -23,7 +23,11 @@ class CSAORanker:
     4. Complementarity aggregated via vectorised NumPy ops.
     5. Feature matrix assembled as a single NumPy array (no dict→DataFrame).
     6. model.predict called ONCE on the full batch.
+    7. MMR re-ranking for diversity — reduces fatigue (same-item-everywhere problem).
     """
+
+    # MMR diversity parameter: 0 = pure diversity, 1 = pure relevance
+    DEFAULT_MMR_LAMBDA = 0.7
 
     def __init__(
         self,
@@ -242,6 +246,70 @@ class CSAORanker:
 
         return X
 
+    def _mmr_rerank(
+        self,
+        ids: list[str],
+        scores: np.ndarray,
+        X: np.ndarray,
+        top_n: int,
+        mmr_lambda: float | None = None,
+    ) -> list[int]:
+        """Maximal Marginal Relevance re-ranking for diversity.
+
+        MMR selects items that are both high-scoring AND dissimilar from
+        already-selected items, breaking the fatigue pattern where the
+        same popular items are recommended to everyone.
+
+        score_mmr(i) = λ * relevance(i) - (1-λ) * max_sim(i, selected)
+
+        Uses the feature vectors as item representations for similarity.
+        """
+        lam = mmr_lambda if mmr_lambda is not None else self.DEFAULT_MMR_LAMBDA
+        n = len(ids)
+        if n <= top_n:
+            return list(np.argsort(scores)[::-1])
+
+        # Normalize scores to [0, 1]
+        s_min, s_max = scores.min(), scores.max()
+        if s_max > s_min:
+            norm_scores = (scores - s_min) / (s_max - s_min)
+        else:
+            norm_scores = np.ones(n, dtype=np.float64)
+
+        # Build item representations from feature matrix (L2-normalised)
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-8, 1.0, norms)
+        X_normed = X / norms
+
+        selected: list[int] = []
+        remaining = set(range(n))
+
+        for _ in range(top_n):
+            best_idx = -1
+            best_mmr = -np.inf
+
+            for idx in remaining:
+                relevance = norm_scores[idx]
+
+                if not selected:
+                    max_sim = 0.0
+                else:
+                    sims = X_normed[idx] @ X_normed[selected].T
+                    max_sim = float(np.max(sims))
+
+                mmr_score = lam * relevance - (1 - lam) * max_sim
+                if mmr_score > best_mmr:
+                    best_mmr = mmr_score
+                    best_idx = idx
+
+            if best_idx >= 0:
+                selected.append(best_idx)
+                remaining.discard(best_idx)
+            else:
+                break
+
+        return selected
+
     def rank(
         self,
         user_id: str,
@@ -249,6 +317,8 @@ class CSAORanker:
         cart_items: list[str],
         candidates: list[tuple[str, float]],
         top_n: int = 10,
+        use_mmr: bool = True,
+        mmr_lambda: float | None = None,
     ) -> list[dict[str, Any]]:
         if not candidates:
             return []
@@ -265,10 +335,11 @@ class CSAORanker:
             warnings.simplefilter("ignore", UserWarning)
             scores = self.model.predict(X)
 
-        # Fast top-N via argpartition instead of full sort when n_candidates >> top_n
-        n = len(scores)
-        if n > top_n * 2:
-            # partial sort — O(n) average instead of O(n log n)
+        # MMR diversity re-ranking (default ON) — fixes fatigue problem
+        if use_mmr and len(ids) > top_n:
+            top_indices = self._mmr_rerank(ids, scores, X, top_n, mmr_lambda)
+        elif len(scores) > top_n * 2:
+            # Fast top-N via argpartition instead of full sort
             top_indices = np.argpartition(scores, -top_n)[-top_n:]
             top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
         else:

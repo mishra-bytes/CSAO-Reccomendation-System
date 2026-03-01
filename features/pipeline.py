@@ -9,6 +9,7 @@ import pandas as pd
 from features.cart_features import build_cart_context_table
 from features.complementarity import build_complementarity_lookup, compute_category_affinity, compute_item_complementarity
 from features.item_features import build_item_features
+from features.llm_embeddings import generate_item_embeddings
 from features.store.cache import save_df
 from features.user_features import build_user_features
 
@@ -21,6 +22,7 @@ class FeatureArtifacts:
     category_affinity: pd.DataFrame
     cart_context: pd.DataFrame
     complementarity_lookup: dict[tuple[str, str], tuple[float, float]]
+    item_embeddings: pd.DataFrame | None = None  # LLM semantic embeddings
 
 
 def build_feature_artifacts(unified: dict[str, pd.DataFrame], config: dict[str, Any]) -> FeatureArtifacts:
@@ -39,6 +41,26 @@ def build_feature_artifacts(unified: dict[str, pd.DataFrame], config: dict[str, 
     cart_context = build_cart_context_table(unified["order_items"], unified["items"], max_categories=max_cart_categories)
     comp_lookup = build_complementarity_lookup(complementarity)
 
+    # --- LLM semantic embeddings ---
+    try:
+        cache_path = Path(processed_dir) / "embeddings_cache.parquet" if (processed_dir := config.get("paths", {}).get("processed_dir")) else None
+        item_embeddings = generate_item_embeddings(
+            unified["items"],
+            cache_path=cache_path,
+        )
+        # Merge embeddings into item features
+        emb_cols = [c for c in item_embeddings.columns if c.startswith("emb_")]
+        item_features = item_features.merge(
+            item_embeddings[["item_id"] + emb_cols],
+            on="item_id",
+            how="left",
+        )
+        item_features[emb_cols] = item_features[emb_cols].fillna(0.0)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Skipping LLM embeddings: %s", e)
+        item_embeddings = None
+
     return FeatureArtifacts(
         user_features=user_features,
         item_features=item_features,
@@ -46,6 +68,7 @@ def build_feature_artifacts(unified: dict[str, pd.DataFrame], config: dict[str, 
         category_affinity=category_affinity,
         cart_context=cart_context,
         complementarity_lookup=comp_lookup,
+        item_embeddings=item_embeddings,
     )
 
 

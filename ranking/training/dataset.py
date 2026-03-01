@@ -232,6 +232,7 @@ def build_training_dataset(
 
     n_neg = int(config.get("ranking", {}).get("negative_samples_per_positive", 4))
     random_state = int(config.get("ranking", {}).get("random_state", 42))
+    max_training_orders = int(config.get("ranking", {}).get("max_training_orders", 50_000))
     rng = np.random.default_rng(random_state)
 
     user_index = user_features.drop_duplicates("user_id").set_index("user_id", drop=False)
@@ -260,6 +261,14 @@ def build_training_dataset(
     query_meta_rows: list[dict[str, Any]] = []
 
     oi = order_items.merge(orders[["order_id", "user_id", "restaurant_id"]], on="order_id", how="left")
+
+    # Cap orders for tractable training time on large datasets
+    unique_order_ids = oi["order_id"].unique()
+    if len(unique_order_ids) > max_training_orders:
+        sampled_order_ids = set(rng.choice(unique_order_ids, size=max_training_orders, replace=False))
+        oi = oi[oi["order_id"].isin(sampled_order_ids)]
+        print(f"[dataset] Sampled {max_training_orders}/{len(unique_order_ids)} orders for training")
+
     for order_id, group in oi.groupby("order_id"):
         seq = group.sort_values("position")
         item_seq = seq["item_id"].astype(str).tolist()

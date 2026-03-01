@@ -57,12 +57,24 @@ def main() -> None:
         items=unified["items"],
         complementarity_lookup=comp_lookup,
     )
+
+    # Build item catalog dict for LLM explainer
+    item_catalog = {}
+    for _, row in unified["items"].iterrows():
+        iid = str(row["item_id"])
+        item_catalog[iid] = {
+            "item_name": str(row.get("item_name", iid)),
+            "item_category": str(row.get("item_category", "unknown")),
+            "item_price": float(row.get("item_price", 0)),
+        }
+
     service = RecommendationService(
         artifacts=ServingArtifacts(
             candidate_generator=candidate_generator,
             ranker=ranker,
             user_features=feats["user_features"],
             item_features=feats["item_features"],
+            item_catalog=item_catalog,
         ),
         config=config,
     )

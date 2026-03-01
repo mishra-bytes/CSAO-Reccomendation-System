@@ -55,6 +55,14 @@ def main() -> None:
             else:
                 print(f"- {key}: {value}")
 
+    if "llm_judge" in result and result["llm_judge"]:
+        print("\nLLM-as-Judge Evaluation:")
+        for key, value in result["llm_judge"].items():
+            if isinstance(value, float):
+                print(f"- {key}: {value:.4f}")
+            else:
+                print(f"- {key}: {value}")
+
 
 if __name__ == "__main__":
     main()

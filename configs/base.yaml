@@ -39,6 +39,7 @@ ranking:
   negative_samples_per_positive: 5
   random_state: 42
   eval_k: 10
+  max_training_orders: 50000
   model_path: models/lgbm_ranker.joblib
   feature_columns_path: models/feature_columns.json
   validation_predictions_path: data/processed/validation_predictions.parquet

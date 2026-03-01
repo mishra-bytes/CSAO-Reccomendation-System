@@ -353,18 +353,9 @@ def prepare_indian_takeaway(takeaway_dir: Path, indian_food_dir: Path | None) ->
                 print(f"  Loaded price list {f.name}: {len(pdf):,} products")
         except Exception as e:
             print(f"  Warning: Could not load price file {f.name}: {e}")
-    frames = []
-    for f in csv_files:
-        try:
-            df = pd.read_csv(f, encoding="latin-1")
-            if len(df.columns) >= 3:  # skip tiny/metadata files
-                frames.append(df)
-                print(f"  Loaded {f.name}: {len(df):,} rows")
-        except Exception as e:
-            print(f"  Warning: Could not load {f.name}: {e}")
 
     if not frames:
-        raise FileNotFoundError(f"No valid CSV data found in {takeaway_dir}")
+        raise FileNotFoundError(f"No valid order CSV data found in {takeaway_dir}")
 
     raw = pd.concat(frames, ignore_index=True)
     raw.columns = [c.strip().lower().replace(" ", "_") for c in raw.columns]
@@ -480,6 +471,10 @@ def prepare_indian_takeaway(takeaway_dir: Path, indian_food_dir: Path | None) ->
     price_col = col_map.get("price")
     time_col = col_map.get("order_time")
 
+    # Drop rows with missing order_id or item_name (e.g. trailing NaN rows)
+    raw = raw.dropna(subset=[order_col, item_col]).copy()
+    print(f"  After dropping NaN rows: {len(raw):,} rows")
+
     # Assign user_ids: cluster orders by time proximity
     # (same-day orders within a few hours → likely same user)
     order_ids = raw[order_col].unique()
@@ -508,11 +503,11 @@ def prepare_indian_takeaway(takeaway_dir: Path, indian_food_dir: Path | None) ->
         else:
             price = round(rng.uniform(80, 300), 2)
 
-        # Timestamp
+        # Timestamp — Indian takeaway uses dd/mm/yyyy format
         order_time = None
         if time_col and pd.notna(row.get(time_col)):
             try:
-                order_time = pd.to_datetime(row[time_col])
+                order_time = pd.to_datetime(row[time_col], dayfirst=True)
             except Exception:
                 pass
         if order_time is None:
