@@ -310,7 +310,7 @@ def main() -> None:
     if isinstance(bl, dict) and "error" not in bl:
         for model_name, metrics in bl.items():
             if isinstance(metrics, dict):
-                ndcg_val = metrics.get("ndcg_at_k", "N/A")
+                ndcg_val = metrics.get("ndcg@10", metrics.get("ndcg_at_k", "N/A"))
                 print(f"  {model_name} NDCG@10: {ndcg_val}")
 
     biz = report.get("business_impact", {})

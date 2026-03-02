@@ -98,7 +98,7 @@ def cooccurrence_baseline(
                 pair_counts[(items[i], items[j])] += 1
                 pair_counts[(items[j], items[i])] += 1
 
-    # Parse cart items from query_meta
+    # Parse cart items from query_meta or reconstruct from order_items
     cart_lookup: dict[str, list[str]] = {}
     if "cart_item_ids" in query_meta.columns:
         for _, row in query_meta.iterrows():
@@ -113,6 +113,27 @@ def cooccurrence_baseline(
                 cart_lookup[qid] = [str(x) for x in cart_raw]
             else:
                 cart_lookup[qid] = []
+    else:
+        # Reconstruct carts from order_items using query_id format {order_id}__{position}
+        oi_cart = order_items[["order_id", "item_id"]].copy()
+        oi_cart["order_id"] = oi_cart["order_id"].astype(str)
+        oi_cart["item_id"] = oi_cart["item_id"].astype(str)
+        order_item_lists: dict[str, list[str]] = {}
+        for oid, grp in oi_cart.groupby("order_id"):
+            order_item_lists[str(oid)] = grp["item_id"].tolist()
+
+        for qid in validation_predictions["query_id"].unique():
+            qid_str = str(qid)
+            parts = qid_str.rsplit("__", 1)
+            if len(parts) != 2:
+                continue
+            order_id, pos_str = parts
+            try:
+                pos = int(pos_str)
+            except ValueError:
+                continue
+            items = order_item_lists.get(order_id, [])
+            cart_lookup[qid_str] = items[:pos] if pos <= len(items) else items
 
     # Vectorized scoring via lookup
     out = validation_predictions[["query_id", "item_id", "label"]].copy()
