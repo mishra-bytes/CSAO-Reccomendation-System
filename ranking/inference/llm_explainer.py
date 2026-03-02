@@ -280,7 +280,15 @@ def explain_recommendations_batch(
 
 # OpenRouter settings
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-_DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+_DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free"
+# Fallback chain: try each model in order if rate-limited (429)
+_FALLBACK_MODELS = [
+    "nvidia/nemotron-nano-9b-v2:free",
+    "google/gemma-3-4b-it:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "arcee-ai/trinity-mini:free",
+]
 
 
 def _llm_explain_batch(
@@ -335,39 +343,57 @@ def _llm_explain_batch(
         items_desc.append(f"- {name} ({cat}, ₹{price:.0f})")
         item_names.append(name)
 
-    prompt = f"""You are a food recommendation assistant for Zomato, India's largest food delivery platform.
+    prompt = f"""A customer's cart contains: {cart_desc} (total ₹{cart_value:.0f}).
 
-A customer is ordering from an Indian restaurant. Their cart contains: {cart_desc} (total ₹{cart_value:.0f}).
-
-For each recommended add-on below, write ONE short sentence (max 15 words) explaining why it complements their order. Focus on taste pairing, meal completion, or cultural dining customs.
+For each item below, write exactly ONE short sentence (max 15 words) about why it complements their order. Focus on taste pairing, meal completion, or Indian dining customs.
 
 {chr(10).join(items_desc)}
 
-Rules:
-- One sentence per item, matching the order above
-- Be specific about the food pairing (e.g., "Raita balances the spice of your biryani")
-- Do NOT repeat the item name at the start
-- Do NOT use bullet points or numbering"""
+IMPORTANT: Output ONLY the explanation sentences, one per line. No preamble, no numbering, no item names. Start directly with the first explanation."""
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=300,
-            extra_headers={
-                "HTTP-Referer": "https://github.com/csao-reco",
-                "X-Title": "CSAO Recommendation System",
-            },
-        )
-        text = response.choices[0].message.content or ""
-        lines = [
-            line.strip().lstrip("- ").lstrip("•").lstrip("0123456789.").strip()
-            for line in text.strip().split("\n")
-            if line.strip() and not line.strip().startswith("#")
-        ]
-        logger.info("OpenRouter LLM explanations generated (%d lines, model=%s)", len(lines), model)
-        return lines
-    except Exception as e:
-        logger.warning("OpenRouter LLM explanation call failed: %s", e)
-        return []
+    # Try models in fallback chain
+    models_to_try = [model] if model else list(_FALLBACK_MODELS)
+    last_error = None
+
+    for try_model in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                model=try_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=300,
+                timeout=5.0,  # 5s hard timeout to avoid latency impact
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/csao-reco",
+                    "X-Title": "CSAO Recommendation System",
+                },
+            )
+            text = response.choices[0].message.content or ""
+            lines = []
+            for line in text.strip().split("\n"):
+                line = line.strip().lstrip("- ").lstrip("•").lstrip("0123456789.)*").strip()
+                if not line:
+                    continue
+                # Skip preamble/meta lines
+                lower = line.lower()
+                if any(kw in lower for kw in ["here are", "here's", "sure", "certainly", "of course", "okay", "recommendations for"]):
+                    continue
+                if line.startswith("#") or line.startswith("**"):
+                    continue
+                lines.append(line)
+            if lines:
+                logger.info("OpenRouter LLM explanations generated (%d lines, model=%s)", len(lines), try_model)
+                return lines
+        except Exception as e:
+            last_error = e
+            # If rate-limited (429), try next model
+            if "429" in str(e):
+                logger.debug("Model %s rate-limited, trying next...", try_model)
+                continue
+            # Other errors: stop trying
+            logger.warning("OpenRouter LLM explanation call failed: %s", e)
+            return []
+
+    if last_error:
+        logger.warning("All OpenRouter models rate-limited: %s", last_error)
+    return []
