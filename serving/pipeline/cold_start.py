@@ -74,8 +74,8 @@ class ColdStartHandler:
         self._category_pop: dict[str, float] = {}         # category popularity
         self._meal_time_pop: dict[str, dict[str, float]] = {}  # hour → item → score
 
-        if user_features is not None and "user_id" in user_features.columns and "order_count" in user_features.columns:
-            warm = user_features[user_features["order_count"] >= self.min_orders_for_warm]
+        if user_features is not None and "user_id" in user_features.columns and "order_frequency" in user_features.columns:
+            warm = user_features[user_features["order_frequency"] >= 0.05]
             self._known_users = set(warm["user_id"].astype(str).unique())
 
         if order_items is not None:
@@ -269,21 +269,21 @@ def evaluate_cold_start_segments(
     from evaluation.metrics.ranking_metrics import ndcg_at_k, precision_at_k, recall_at_k
 
     merged = predictions.merge(query_meta[["query_id", "user_id"]], on="query_id", how="left")
-    uf = user_features[["user_id", "order_count"]].drop_duplicates("user_id")
+    uf = user_features[["user_id", "order_frequency"]].drop_duplicates("user_id")
     merged = merged.merge(uf, on="user_id", how="left")
-    merged["order_count"] = merged["order_count"].fillna(0)
+    merged["order_frequency"] = merged["order_frequency"].fillna(0)
 
-    def _segment(cnt):
-        if cnt < min_orders_for_warm:
-            return "cold_start (<3 orders)"
-        elif cnt <= 10:
-            return "warm (3-10 orders)"
-        elif cnt <= 30:
-            return "active (11-30)"
+    def _segment(freq):
+        if freq < 0.02:
+            return "cold_start (very low freq)"
+        elif freq < 0.05:
+            return "warm (low freq)"
+        elif freq <= 0.15:
+            return "active (moderate freq)"
         else:
-            return "power_user (>30)"
+            return "power_user (high freq)"
 
-    merged["cs_segment"] = merged["order_count"].apply(_segment)
+    merged["cs_segment"] = merged["order_frequency"].apply(_segment)
 
     rows = []
     for seg, seg_df in merged.groupby("cs_segment"):

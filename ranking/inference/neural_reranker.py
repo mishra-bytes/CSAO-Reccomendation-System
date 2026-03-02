@@ -286,13 +286,19 @@ if TORCH_AVAILABLE:
     def build_training_triplets(
         validation_predictions: pd.DataFrame,
         query_meta: pd.DataFrame,
+        order_items: pd.DataFrame | None = None,
         max_triplets: int = 10000,
     ) -> list[dict[str, Any]]:
-        """Extract (cart, positive, negative) triplets from val predictions."""
-        import ast
+        """Extract (cart, positive, negative) triplets from val predictions.
 
+        Reconstructs cart items from order_items using the query_id format:
+        '{order_id}__{position}' where cart = items at positions < position.
+        """
+        # Build order → sorted items lookup
         cart_lookup: dict[str, list[str]] = {}
+
         if "cart_item_ids" in query_meta.columns:
+            import ast
             for _, row in query_meta.iterrows():
                 qid = str(row["query_id"])
                 raw = row.get("cart_item_ids", "[]")
@@ -305,6 +311,27 @@ if TORCH_AVAILABLE:
                     cart_lookup[qid] = [str(x) for x in raw]
                 else:
                     cart_lookup[qid] = []
+        elif order_items is not None:
+            # Reconstruct carts from order_items using query_id structure
+            oi = order_items[["order_id", "item_id"]].copy()
+            oi["order_id"] = oi["order_id"].astype(str)
+            oi["item_id"] = oi["item_id"].astype(str)
+            order_item_lists: dict[str, list[str]] = {}
+            for oid, grp in oi.groupby("order_id"):
+                order_item_lists[str(oid)] = grp["item_id"].tolist()
+
+            for qid in validation_predictions["query_id"].unique():
+                qid_str = str(qid)
+                parts = qid_str.rsplit("__", 1)
+                if len(parts) != 2:
+                    continue
+                order_id, pos_str = parts
+                try:
+                    pos = int(pos_str)
+                except ValueError:
+                    continue
+                items = order_item_lists.get(order_id, [])
+                cart_lookup[qid_str] = items[:pos] if pos <= len(items) else items
 
         triplets = []
         for qid, group in validation_predictions.groupby("query_id"):

@@ -86,11 +86,13 @@ def main() -> None:
         from experiments.baselines import run_baseline_comparison
 
         bl_results = run_baseline_comparison(
-            unified=unified,
+            validation_predictions=predictions,
+            query_meta=query_meta,
+            orders=unified["orders"],
+            order_items=unified["order_items"],
+            item_catalog=unified["items"],
             user_features=features["user_features"],
-            item_features=features["item_features"],
-            comp_lookup=comp_lookup,
-            config=config,
+            k=k,
         )
         print(bl_results.to_string())
         report["baseline_comparison"] = bl_results.to_dict(orient="index")
@@ -205,16 +207,32 @@ def main() -> None:
                 train_reranker,
             )
 
-            triplets = build_training_triplets(predictions, top_k=k)
+            triplets = build_training_triplets(
+                predictions, query_meta,
+                order_items=unified["order_items"],
+                max_triplets=2000,
+            )
             if len(triplets) < 10:
                 print("  Not enough triplets for neural training, skipping.")
                 report["neural_reranker"] = {"skipped": True, "reason": "insufficient triplets"}
             else:
                 print(f"  Training triplets: {len(triplets)}")
-                reranker = train_reranker(triplets, epochs=10, lr=1e-3)
+                reranker = train_reranker(
+                    triplets,
+                    item_embeddings={},  # hash-based fallback embeddings
+                    d_in=64, d_model=64,
+                    epochs=10, lr=1e-3,
+                    save_path="models/neural_reranker.pt",
+                )
                 if reranker is not None:
                     print(f"  Neural reranker trained successfully")
-                    report["neural_reranker"] = {"trained": True, "n_triplets": len(triplets)}
+                    report["neural_reranker"] = {
+                        "trained": True,
+                        "n_triplets": len(triplets),
+                        "architecture": "CartCandidateAttention (cross-attention)",
+                        "d_model": 64,
+                        "loss": "BPR (Bayesian Personalized Ranking)",
+                    }
                 else:
                     report["neural_reranker"] = {"skipped": True, "reason": "PyTorch not available"}
         except Exception as e:

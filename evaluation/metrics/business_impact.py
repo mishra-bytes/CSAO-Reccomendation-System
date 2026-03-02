@@ -34,14 +34,19 @@ def compute_attach_rate(predictions: pd.DataFrame, k: int = 10) -> float:
     This proxy maps directly to the real-world attach rate: "of all users
     who saw recommendations, what % added at least one to cart?"
     """
-    attach = 0
-    total = 0
-    for _, group in predictions.groupby("query_id"):
-        top = group.sort_values("score", ascending=False).head(k)
-        total += 1
-        if top["label"].sum() > 0:
-            attach += 1
-    return attach / max(total, 1)
+    # Convert to native types to avoid slow arrow-backed groupby
+    df = predictions[["query_id", "score", "label"]].copy()
+    df["query_id"] = df["query_id"].astype(str)
+    df["score"] = df["score"].astype(float)
+    df["label"] = df["label"].astype(int)
+
+    # Rank within each group and keep top-k
+    df["rank"] = df.groupby("query_id")["score"].rank(ascending=False, method="first")
+    top_k = df[df["rank"] <= k]
+
+    # Check if any relevant item exists in top-k per query
+    attach_per_query = top_k.groupby("query_id")["label"].max()
+    return float((attach_per_query > 0).mean())
 
 
 def compute_incremental_aov(
@@ -58,20 +63,21 @@ def compute_incremental_aov(
     recommendation in production — typically 10-20% from industry
     benchmarks).
     """
-    incremental_values = []
-    for _, group in predictions.groupby("query_id"):
-        top = group.sort_values("score", ascending=False).head(k)
-        relevant = top[top["label"] == 1]
-        if relevant.empty:
-            continue
-        # Assume user adds the top recommended relevant item
-        best_item = str(relevant.iloc[0]["item_id"])
-        price = item_prices.get(best_item, 0.0)
-        incremental_values.append(price * take_rate)
+    df = predictions[["query_id", "item_id", "score", "label"]].copy()
+    df["query_id"] = df["query_id"].astype(str)
+    df["item_id"] = df["item_id"].astype(str)
+    df["score"] = df["score"].astype(float)
+    df["label"] = df["label"].astype(int)
+    df["rank"] = df.groupby("query_id")["score"].rank(ascending=False, method="first")
+    top_k = df[df["rank"] <= k].copy()
 
-    if not incremental_values:
+    # Among relevant items in top-k, get the highest-scored one per query
+    relevant = top_k[top_k["label"] == 1].copy()
+    if relevant.empty:
         return 0.0
-    return float(np.mean(incremental_values))
+    best = relevant.sort_values("score", ascending=False).drop_duplicates("query_id")
+    best["price"] = best["item_id"].map(item_prices).fillna(0.0)
+    return float((best["price"] * take_rate).mean())
 
 
 def compute_revenue_uplift(
@@ -98,15 +104,18 @@ def compute_fatigue_score(predictions: pd.DataFrame, k: int = 10) -> float:
     the same items to everyone (fatigue risk). Near 0.0 means high
     diversity.
     """
-    all_recommended = []
-    for _, group in predictions.groupby("query_id"):
-        top = group.sort_values("score", ascending=False).head(k)
-        all_recommended.extend(top["item_id"].astype(str).tolist())
+    df = predictions[["query_id", "item_id", "score"]].copy()
+    df["query_id"] = df["query_id"].astype(str)
+    df["item_id"] = df["item_id"].astype(str)
+    df["score"] = df["score"].astype(float)
+    df["rank"] = df.groupby("query_id")["score"].rank(ascending=False, method="first")
+    top_k = df[df["rank"] <= k]
 
-    if not all_recommended:
+    if top_k.empty:
         return 0.0
-    unique_ratio = len(set(all_recommended)) / max(len(all_recommended), 1)
-    return 1.0 - unique_ratio  # closer to 0 = less fatigue
+    total = len(top_k)
+    unique = top_k["item_id"].nunique()
+    return 1.0 - (unique / max(total, 1))  # closer to 0 = less fatigue
 
 
 def evaluate_business_impact(
@@ -128,15 +137,16 @@ def evaluate_business_impact(
     rev_uplift = compute_revenue_uplift(predictions, item_prices, k=k, take_rate=take_rate)
     fatigue = compute_fatigue_score(predictions, k=k)
 
-    # Average price of recommended items (for sanity check)
-    all_reco_prices = []
-    for _, group in predictions.groupby("query_id"):
-        top = group.sort_values("score", ascending=False).head(k)
-        for iid in top["item_id"].astype(str):
-            p = item_prices.get(iid, 0.0)
-            if p > 0:
-                all_reco_prices.append(p)
-    avg_price = float(np.mean(all_reco_prices)) if all_reco_prices else 0.0
+    # Average price of recommended items (vectorized)
+    df = predictions[["query_id", "item_id", "score"]].copy()
+    df["query_id"] = df["query_id"].astype(str)
+    df["item_id"] = df["item_id"].astype(str)
+    df["score"] = df["score"].astype(float)
+    df["rank"] = df.groupby("query_id")["score"].rank(ascending=False, method="first")
+    top_k = df[df["rank"] <= k]
+    reco_prices = top_k["item_id"].map(item_prices).dropna()
+    reco_prices = reco_prices[reco_prices > 0]
+    avg_price = float(reco_prices.mean()) if len(reco_prices) > 0 else 0.0
 
     detail = {
         "take_rate_assumed": take_rate,

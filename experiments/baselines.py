@@ -67,7 +67,9 @@ def cooccurrence_baseline(
     features, but this baseline uses lift as the *sole* ranking signal — no
     user features, no cart context, no ML model.
     """
-    # Build co-occurrence counts from training data
+    import ast
+
+    # Build co-occurrence counts from training data (sampled for speed)
     n_orders = orders["order_id"].nunique()
     oi = order_items[["order_id", "item_id"]].copy()
     oi["item_id"] = oi["item_id"].astype(str)
@@ -77,38 +79,32 @@ def cooccurrence_baseline(
         oi.groupby("item_id")["order_id"].nunique().to_dict()
     )
 
-    # Pairwise co-occurrence (bidirectional)
+    # Pairwise co-occurrence — sample up to 50K orders for speed
+    sampled_orders = oi["order_id"].unique()
+    if len(sampled_orders) > 50000:
+        rng = np.random.RandomState(42)
+        sampled_orders = rng.choice(sampled_orders, 50000, replace=False)
+        oi_sample = oi[oi["order_id"].isin(set(sampled_orders))]
+    else:
+        oi_sample = oi
+
     pair_counts: dict[tuple[str, str], int] = defaultdict(int)
-    for _, group in oi.groupby("order_id"):
+    for _, group in oi_sample.groupby("order_id"):
         items = group["item_id"].unique().tolist()
-        if len(items) > 30:
-            items = items[:30]  # cap for speed
+        if len(items) > 20:
+            items = items[:20]
         for i in range(len(items)):
             for j in range(i + 1, len(items)):
                 pair_counts[(items[i], items[j])] += 1
                 pair_counts[(items[j], items[i])] += 1
 
-    def _lift(item_a: str, item_b: str) -> float:
-        co = pair_counts.get((item_a, item_b), 0)
-        fa = item_freq.get(item_a, 0)
-        fb = item_freq.get(item_b, 0)
-        if fa == 0 or fb == 0 or n_orders == 0:
-            return 0.0
-        pa = fa / n_orders
-        pb = fb / n_orders
-        pab = co / n_orders
-        return pab / (pa * pb + 1e-9)
-
     # Parse cart items from query_meta
-    qmeta = query_meta.copy()
-    # query_meta has: query_id, user_id, restaurant_id, cart_item_ids (str repr)
     cart_lookup: dict[str, list[str]] = {}
-    if "cart_item_ids" in qmeta.columns:
-        for _, row in qmeta.iterrows():
+    if "cart_item_ids" in query_meta.columns:
+        for _, row in query_meta.iterrows():
             qid = str(row["query_id"])
             cart_raw = row.get("cart_item_ids", "[]")
             if isinstance(cart_raw, str):
-                import ast
                 try:
                     cart_lookup[qid] = [str(x) for x in ast.literal_eval(cart_raw)]
                 except Exception:
@@ -118,18 +114,36 @@ def cooccurrence_baseline(
             else:
                 cart_lookup[qid] = []
 
-    # Score each candidate
+    # Vectorized scoring via lookup
     out = validation_predictions[["query_id", "item_id", "label"]].copy()
-    scores = []
-    for _, row in out.iterrows():
-        qid = str(row["query_id"])
-        cand = str(row["item_id"])
-        cart = cart_lookup.get(qid, [])
+    qids = out["query_id"].astype(str).values
+    cands = out["item_id"].astype(str).values
+    scores = np.zeros(len(out), dtype=np.float64)
+
+    for idx in range(len(out)):
+        cart = cart_lookup.get(qids[idx], [])
         if not cart:
-            scores.append(0.0)
-        else:
-            lifts = [_lift(ci, cand) for ci in cart]
-            scores.append(max(lifts) if lifts else 0.0)
+            continue
+        cand = cands[idx]
+        best = 0.0
+        fb = item_freq.get(cand, 0)
+        if fb == 0:
+            continue
+        pb = fb / n_orders
+        for ci in cart:
+            co = pair_counts.get((ci, cand), 0)
+            if co == 0:
+                continue
+            fa = item_freq.get(ci, 0)
+            if fa == 0:
+                continue
+            pa = fa / n_orders
+            pab = co / n_orders
+            lift = pab / (pa * pb + 1e-9)
+            if lift > best:
+                best = lift
+        scores[idx] = best
+
     out["score"] = scores
     return out
 
@@ -160,9 +174,13 @@ def run_baseline_comparison(
 ) -> pd.DataFrame:
     """Run all baselines + the main model and produce a comparison table.
 
+    Uses lightweight ranking metrics (no LLM judge / embedding model) for speed.
     Returns a DataFrame with one row per model and metrics as columns.
     """
-    from evaluation.run_eval import evaluate_offline
+    from evaluation.metrics.ranking_metrics import (
+        coverage_at_k, ndcg_at_k, precision_at_k, recall_at_k,
+    )
+    from evaluation.metrics.business_impact import compute_attach_rate
 
     models = {
         "CSAO_LightGBM": validation_predictions,
@@ -176,12 +194,14 @@ def run_baseline_comparison(
     rows = []
     for name, preds in models.items():
         print(f"  Evaluating {name}...", flush=True)
-        result = evaluate_offline(preds, item_catalog, query_meta, user_features, k=k)
-        row = {"model": name}
-        # Overall metrics
-        row.update(result.get("overall", {}))
-        # Business metrics
-        row.update(result.get("business_impact", {}))
+        row = {
+            "model": name,
+            "ndcg@10": ndcg_at_k(preds, k=k),
+            "precision@10": precision_at_k(preds, k=k),
+            "recall@10": recall_at_k(preds, k=k),
+            "coverage@10": coverage_at_k(preds, item_catalog, k=k),
+            "attach_rate": compute_attach_rate(preds, k=k),
+        }
         rows.append(row)
 
     comparison = pd.DataFrame(rows).set_index("model")
