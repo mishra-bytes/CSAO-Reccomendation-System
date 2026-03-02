@@ -79,14 +79,68 @@ ranker = CSAORanker(
 
 # ── Build realistic demo catalog (cuisine-aware dish names & restaurant names) ─
 print("[demo]  .. building demo catalog", flush=True)
-from scripts.demo_catalog import build_demo_catalog
 
-item_catalog, restaurant_list, rest_items_map = build_demo_catalog(
-    items_df=unified["items"],
-    restaurants_df=unified["restaurants"],
-    order_items_df=unified["order_items"],
-    orders_df=unified["orders"],
-)
+# Check if items already have proper food names (Indian food data)
+# by seeing if item_names match dishes in our known catalog
+_sample_names = unified["items"]["item_name"].head(20).tolist()
+from scripts.demo_catalog import DISHES as _DISHES_CHECK
+
+_known_dish_names = set()
+for _cuisine_dict in _DISHES_CHECK.values():
+    if isinstance(_cuisine_dict, dict):
+        for _cat_list in _cuisine_dict.values():
+            if isinstance(_cat_list, list):
+                for _entry in _cat_list:
+                    if isinstance(_entry, tuple) and len(_entry) >= 1:
+                        _known_dish_names.add(_entry[0])
+
+_name_matches = sum(1 for n in _sample_names if n in _known_dish_names)
+_use_passthrough = _name_matches > len(_sample_names) * 0.3  # >30% match = proper food data
+
+if _use_passthrough:
+    print("[demo]  .. items already have proper food names, using direct catalog", flush=True)
+    # Build catalog directly from unified data (no remapping needed)
+    item_catalog = {}
+    for _, row in unified["items"].iterrows():
+        iid = str(row["item_id"])
+        item_catalog[iid] = {
+            "item_name": str(row.get("item_name", iid)),
+            "item_category": str(row.get("item_category", "unknown")),
+            "item_price": float(row.get("item_price", 0)),
+        }
+
+    # Restaurant → item mapping from actual orders
+    _oi_merged = unified["order_items"].merge(
+        unified["orders"][["order_id", "restaurant_id"]], on="order_id", how="left"
+    )
+    rest_items_map = (
+        _oi_merged.groupby("restaurant_id")["item_id"]
+        .apply(lambda s: sorted(set(s.astype(str))))
+        .to_dict()
+    )
+
+    # Restaurant list with actual names from data
+    from scripts.demo_catalog import RESTAURANT_NAMES as _RNAMES
+    restaurant_list = []
+    for _, row in unified["restaurants"].iterrows():
+        rid = str(row["restaurant_id"])
+        restaurant_list.append({
+            "id": rid,
+            "name": str(row.get("restaurant_name", rid)),
+            "city": str(row.get("city", "")),
+            "cuisine": str(row.get("cuisine", "North Indian")),
+            "item_count": len(rest_items_map.get(rid, [])),
+        })
+    restaurant_list.sort(key=lambda x: x["item_count"], reverse=True)
+else:
+    print("[demo]  .. using demo catalog remapping (legacy Instacart names)", flush=True)
+    from scripts.demo_catalog import build_demo_catalog
+    item_catalog, restaurant_list, rest_items_map = build_demo_catalog(
+        items_df=unified["items"],
+        restaurants_df=unified["restaurants"],
+        order_items_df=unified["order_items"],
+        orders_df=unified["orders"],
+    )
 
 service = RecommendationService(
     artifacts=ServingArtifacts(

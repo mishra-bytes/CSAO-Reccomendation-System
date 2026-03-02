@@ -90,6 +90,13 @@ class RecommendationService:
                     best_arch = arch
             missing_cats = (best_arch - cart_cats) if best_arch else set()
 
+            # Resolve last cart item name for explanations
+            last_item_name = ""
+            if req.cart_item_ids:
+                last_id = req.cart_item_ids[-1]
+                last_entry = self.artifacts.item_catalog.get(last_id, {})
+                last_item_name = last_entry.get("item_name", last_id)
+
             cart_info = {
                 "categories": list(cart_cats),
                 "missing_categories": missing_cats,
@@ -97,7 +104,7 @@ class RecommendationService:
                     float(items_lookup.loc[ci]["item_price"]) if ci in items_lookup.index else 0
                     for ci in req.cart_item_ids
                 ),
-                "last_item_name": req.cart_item_ids[-1] if req.cart_item_ids else "",
+                "last_item_name": last_item_name,
                 "cart_size": len(req.cart_item_ids),
                 "item_ids": req.cart_item_ids,
             }

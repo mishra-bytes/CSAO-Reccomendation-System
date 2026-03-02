@@ -7,9 +7,10 @@ was recommended to the user.  Two modes:
    Uses cart composition, meal-gap analysis, and complementarity signals
    to render natural-language explanations from structured templates.
 
-2. **LLM API** (optional, latency-aware):
-   Calls an OpenAI-compatible API to generate richer free-form explanations.
-   Activated only when ``OPENAI_API_KEY`` env var is set.
+2. **LLM API via OpenRouter** (optional, latency-aware):
+   Calls OpenRouter's API (OpenAI-compatible) for richer free-form explanations.
+   Activated when ``OPENROUTER_API_KEY`` env var is set.
+   Uses free models (e.g., Llama 3.1 8B) — no cost.
 
 Why this matters for Zomathon scoring:
 - Demonstrates *AI/LLM edge* beyond classical ML.
@@ -127,10 +128,19 @@ def _render_template(
 ) -> str:
     """Render a single template with dynamic context."""
     template = _TEMPLATES.get(reason, _TEMPLATES["generic"])
+
+    # Friendly category names for display
+    _CAT_DISPLAY = {
+        "addon": "side", "main_course": "main dish", "starter": "starter",
+        "beverage": "drink", "dessert": "dessert",
+    }
+    category = item_info.get("category", "food")
+    display_cat = _CAT_DISPLAY.get(category, category.replace("_", " "))
+
     return template.format(
         item_name=item_info.get("name", "this item"),
-        category=item_info.get("category", "food"),
-        missing_type=item_info.get("category", "item"),
+        category=display_cat,
+        missing_type=display_cat,
         price=item_info.get("price", 0),
         cart_value=cart_info.get("cart_value", 0),
         cart_item=cart_info.get("last_item_name", "your items"),
@@ -188,6 +198,7 @@ def explain_recommendations_batch(
     cart_info: dict[str, Any],
     item_catalog: dict[str, dict],
     comp_lookup: dict[tuple[str, str], tuple[float, float]] | None = None,
+    use_llm: bool = True,
 ) -> list[RecommendationExplanation]:
     """Explain a full ranked list of recommendations.
 
@@ -201,7 +212,10 @@ def explain_recommendations_batch(
         Mapping item_id → {name, category, price, popularity_rank}
     comp_lookup : dict | None
         Complementarity lookup for lift scores.
+    use_llm : bool
+        If True and OPENROUTER_API_KEY is set, overlay with LLM explanations.
     """
+    # Always build template explanations as baseline
     explanations: list[RecommendationExplanation] = []
     cart_item_ids = cart_info.get("item_ids", [])
 
@@ -234,60 +248,106 @@ def explain_recommendations_batch(
             )
         )
 
+    # --- LLM Enhancement Layer (OpenRouter) ---
+    if use_llm and os.environ.get("OPENROUTER_API_KEY"):
+        try:
+            llm_lines = _llm_explain_batch(
+                ranked_items=ranked_items,
+                cart_info=cart_info,
+                item_catalog=item_catalog,
+            )
+            if llm_lines:
+                for i, line in enumerate(llm_lines):
+                    if i < len(explanations) and line:
+                        # Overlay LLM explanation, keep template reason_tags
+                        explanations[i] = RecommendationExplanation(
+                            item_id=explanations[i].item_id,
+                            item_name=explanations[i].item_name,
+                            explanation=line,
+                            confidence=min(1.0, explanations[i].confidence + 0.1),
+                            reason_tags=explanations[i].reason_tags + ["llm_enhanced"],
+                            meal_context=explanations[i].meal_context,
+                        )
+        except Exception as e:
+            logger.warning("LLM enhancement failed, using templates: %s", e)
+
     return explanations
 
 
 # ---------------------------------------------------------------------------
-# LLM API explainer (optional — activated when OPENAI_API_KEY is set)
+# LLM API explainer via OpenRouter (free models, OpenAI-compatible)
 # ---------------------------------------------------------------------------
+
+# OpenRouter settings
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+
 
 def _llm_explain_batch(
     ranked_items: list[dict[str, Any]],
     cart_info: dict[str, Any],
     item_catalog: dict[str, dict],
-    model: str = "gpt-4o-mini",
+    model: str | None = None,
     max_items: int = 5,
 ) -> list[str]:
-    """Call OpenAI-compatible API for richer explanations.
+    """Call OpenRouter API for richer LLM-generated explanations.
 
-    Only called as an *enhancement layer* — the template engine always
-    produces a baseline, and LLM responses are overlaid if available.
+    Uses OpenAI-compatible API format. Requires ``OPENROUTER_API_KEY`` env var.
+    Falls back gracefully — the template engine always provides a baseline.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        logger.debug("No OPENAI_API_KEY — skipping LLM explanations")
+        logger.debug("No OPENROUTER_API_KEY — skipping LLM explanations")
         return []
 
     try:
         import openai
-
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(
+            base_url=_OPENROUTER_BASE_URL,
+            api_key=api_key,
+        )
     except ImportError:
         logger.debug("openai package not installed — skipping LLM explanations")
         return []
 
-    # Build prompt
-    cart_desc = ", ".join(cart_info.get("categories", ["items"]))
+    model = model or _DEFAULT_MODEL
+
+    # Build cart description
+    cart_items_desc = []
+    for ci in cart_info.get("item_ids", []):
+        entry = item_catalog.get(ci, {})
+        name = entry.get("item_name", ci)
+        cat = entry.get("item_category", "food")
+        cart_items_desc.append(f"{name} ({cat})")
+    cart_desc = ", ".join(cart_items_desc) if cart_items_desc else \
+        ", ".join(cart_info.get("categories", ["items"]))
     cart_value = cart_info.get("cart_value", 0)
+
+    # Build candidate items description
     items_desc = []
+    item_names = []
     for item in ranked_items[:max_items]:
         iid = str(item["item_id"])
         entry = item_catalog.get(iid, {})
-        name = entry.get("item_name", iid)
-        cat = entry.get("item_category", "food")
-        price = entry.get("item_price", 0)
+        name = entry.get("item_name", entry.get("name", iid))
+        cat = entry.get("item_category", entry.get("category", "food"))
+        price = entry.get("item_price", entry.get("price", 0))
         items_desc.append(f"- {name} ({cat}, ₹{price:.0f})")
+        item_names.append(name)
 
     prompt = f"""You are a food recommendation assistant for Zomato, India's largest food delivery platform.
 
-A customer's cart contains: {cart_desc} (total ₹{cart_value:.0f}).
+A customer is ordering from an Indian restaurant. Their cart contains: {cart_desc} (total ₹{cart_value:.0f}).
 
-Explain why each of these add-on items would complement their order. Be concise (1 sentence each), 
-friendly, and specific about meal completion or taste pairing:
+For each recommended add-on below, write ONE short sentence (max 15 words) explaining why it complements their order. Focus on taste pairing, meal completion, or cultural dining customs.
 
 {chr(10).join(items_desc)}
 
-Return one explanation per line, matching the order above."""
+Rules:
+- One sentence per item, matching the order above
+- Be specific about the food pairing (e.g., "Raita balances the spice of your biryani")
+- Do NOT repeat the item name at the start
+- Do NOT use bullet points or numbering"""
 
     try:
         response = client.chat.completions.create(
@@ -295,10 +355,19 @@ Return one explanation per line, matching the order above."""
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=300,
+            extra_headers={
+                "HTTP-Referer": "https://github.com/csao-reco",
+                "X-Title": "CSAO Recommendation System",
+            },
         )
         text = response.choices[0].message.content or ""
-        lines = [line.strip().lstrip("- ").lstrip("•").strip() for line in text.strip().split("\n") if line.strip()]
+        lines = [
+            line.strip().lstrip("- ").lstrip("•").lstrip("0123456789.").strip()
+            for line in text.strip().split("\n")
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        logger.info("OpenRouter LLM explanations generated (%d lines, model=%s)", len(lines), model)
         return lines
     except Exception as e:
-        logger.warning("LLM explanation call failed: %s", e)
+        logger.warning("OpenRouter LLM explanation call failed: %s", e)
         return []
