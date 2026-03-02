@@ -5,6 +5,8 @@ from typing import Any
 
 import pandas as pd
 
+from features.meal_semantics import category_compatibility_multiplier
+
 from candidate_generation.retrievers.category import CategoryComplementRetriever
 from candidate_generation.retrievers.cooccurrence import CooccurrenceRetriever
 from candidate_generation.retrievers.meal_gap import MealGapRetriever
@@ -36,6 +38,9 @@ class CandidateGenerator:
         self.cat_retriever = CategoryComplementRetriever(category_affinity, items, orders, order_items)
         self.session_retriever = SessionCovisitRetriever(orders, order_items)
         self.meal_gap_retriever = MealGapRetriever(items, orders, order_items)
+        item_meta = items.drop_duplicates("item_id").set_index("item_id")
+        self._item_name = item_meta.get("item_name", pd.Series(dtype=str)).astype(str).to_dict()
+        self._item_category = item_meta.get("item_category", pd.Series(dtype=str)).astype(str).to_dict()
 
         # Retriever weights — tuned for CSAO where cart-aware signals dominate
         self._weights = {
@@ -60,21 +65,22 @@ class CandidateGenerator:
 
         w = self._weights
         aggregate: dict[str, float] = defaultdict(float)
+        cart_names = [self._item_name.get(str(i), "") for i in cart_items]
         for item, score in co:
             if item not in exclude:
-                aggregate[item] += w["cooccurrence"] * score
+                aggregate[item] += category_compatibility_multiplier(cart_names, self._item_category.get(str(item), "unknown")) * w["cooccurrence"] * score
         for item, score in session:
             if item not in exclude:
-                aggregate[item] += w["session"] * score
+                aggregate[item] += category_compatibility_multiplier(cart_names, self._item_category.get(str(item), "unknown")) * w["session"] * score
         for item, score in meal_gap:
             if item not in exclude:
-                aggregate[item] += w["meal_gap"] * score
+                aggregate[item] += category_compatibility_multiplier(cart_names, self._item_category.get(str(item), "unknown")) * w["meal_gap"] * score
         for item, score in cat:
             if item not in exclude:
-                aggregate[item] += w["category"] * score
+                aggregate[item] += category_compatibility_multiplier(cart_names, self._item_category.get(str(item), "unknown")) * w["category"] * score
         for item, score in pop:
             if item not in exclude:
-                aggregate[item] += w["popularity"] * score
+                aggregate[item] += category_compatibility_multiplier(cart_names, self._item_category.get(str(item), "unknown")) * w["popularity"] * score
 
         ranked = sorted(aggregate.items(), key=lambda x: x[1], reverse=True)
         if len(ranked) < target_k:

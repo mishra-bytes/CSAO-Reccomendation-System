@@ -60,3 +60,23 @@ Unified tables produced in `data/processed/`:
 - Synthetic fallback data is enabled by default for hackathon speed.
 - Replace synthetic data with real datasets by updating `configs/base.yaml`.
 - TODO markers in code indicate production hardening gaps.
+
+
+## LLM Integration (OpenRouter)
+
+- Provider: **OpenRouter** (OpenAI-compatible API client).
+- API key env var: **`OPENROUTER_API_KEY`**.
+- Hot path policy: LLM is optional and not required for serving-quality recommendations; template explanations are default.
+- Verification: run `python -m pytest -q tests/test_llm_integration.py -s`.
+
+## Evidence Index
+
+- LLM integration + fallback behavior: `tests/test_llm_integration.py`
+- Pairing sanity (Egg Roll trace): `tests/test_pairing_sanity.py`
+- Meal semantics constraints: `tests/test_meal_semantics.py`
+- Cold start validation: `tests/test_cold_start.py`
+- Pairing failure diagnosis: `docs/pairing_failure_analysis.md`
+- Cold-start strategy: `docs/cold_start_strategy.md`
+- Data realism defense: `docs/data_realism_defense.md`
+- Business impact sensitivity math: `docs/business_impact_validation.md`
+- Latency evidence: `docs/latency_analysis.md`
