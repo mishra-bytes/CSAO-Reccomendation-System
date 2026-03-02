@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-def compute_item_complementarity(order_items: pd.DataFrame, min_support: int = 2) -> pd.DataFrame:
+def compute_item_complementarity(order_items: pd.DataFrame, min_support: int = 10) -> pd.DataFrame:
     order_to_items = (
         order_items.sort_values(["order_id", "position"])
         .groupby("order_id")["item_id"]
@@ -47,7 +47,7 @@ def compute_item_complementarity(order_items: pd.DataFrame, min_support: int = 2
 def compute_category_affinity(
     order_items: pd.DataFrame,
     items: pd.DataFrame,
-    min_support: int = 2,
+    min_support: int = 5,
 ) -> pd.DataFrame:
     item_to_cat = items.set_index("item_id")["item_category"].astype(str).to_dict()
     order_to_cats = order_items.groupby("order_id")["item_id"].apply(

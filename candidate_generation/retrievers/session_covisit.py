@@ -43,36 +43,40 @@ class SessionCovisitRetriever:
         max_position_gap: int,
         min_transitions: int,
     ) -> None:
-        """Build transition graph from order item sequences."""
+        """Build transition graph from order item sequences (vectorized)."""
         oi = order_items.sort_values(["order_id", "position"]).copy()
         oi["item_id"] = oi["item_id"].astype(str)
 
-        transition_counts: defaultdict[tuple[str, str], float] = defaultdict(float)
-        source_counts: defaultdict[str, int] = defaultdict(int)
+        # Source counts: how many times each item appears (vectorized)
+        source_counts_s = oi["item_id"].value_counts()
 
-        for _, group in oi.groupby("order_id"):
-            items = group["item_id"].tolist()
-            n = len(items)
-            for i in range(n):
-                source_counts[items[i]] += 1
-                for gap in range(1, min(max_position_gap + 1, n - i)):
-                    j = i + gap
-                    if j < n:
-                        decay = 1.0 / gap  # closer transitions get higher weight
-                        transition_counts[(items[i], items[j])] += decay
+        # Build transitions for each position gap using vectorized shift
+        frames = []
+        for gap in range(1, max_position_gap + 1):
+            shifted = oi.copy()
+            shifted["dst"] = shifted.groupby("order_id")["item_id"].shift(-gap)
+            shifted = shifted.dropna(subset=["dst"])
+            shifted["decay"] = 1.0 / gap
+            frames.append(shifted[["item_id", "dst", "decay"]])
 
-        # Normalise by source frequency and filter by minimum support
-        scored: defaultdict[str, list[tuple[str, float]]] = defaultdict(list)
-        for (src, dst), count in transition_counts.items():
-            if count < min_transitions:
-                continue
-            src_freq = max(source_counts[src], 1)
-            score = count / src_freq
-            scored[src].append((dst, score))
+        if not frames:
+            return
 
-        # Sort each source's candidates by score
-        for src in scored:
-            self.index[src] = sorted(scored[src], key=lambda x: x[1], reverse=True)
+        all_trans = pd.concat(frames, ignore_index=True)
+        # Aggregate transition counts with decay weights
+        agg = all_trans.groupby(["item_id", "dst"])["decay"].sum().reset_index()
+        agg.columns = ["src", "dst", "count"]
+
+        # Filter by minimum support
+        agg = agg[agg["count"] >= min_transitions]
+
+        # Normalise by source frequency
+        agg["src_freq"] = agg["src"].map(source_counts_s).fillna(1).clip(lower=1)
+        agg["score"] = agg["count"] / agg["src_freq"]
+
+        # Build index sorted by score descending
+        for _, row in agg.sort_values("score", ascending=False).iterrows():
+            self.index[row["src"]].append((row["dst"], row["score"]))
 
     def retrieve(
         self,

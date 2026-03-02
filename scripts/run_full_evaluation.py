@@ -220,10 +220,26 @@ def main() -> None:
                 report["neural_reranker"] = {"skipped": True, "reason": "insufficient triplets"}
             else:
                 print(f"  Training triplets: {len(triplets)}")
+                # Load real sentence-transformer embeddings (PCA-8)
+                emb_path = Path("data/processed/embeddings_cache.parquet")
+                if emb_path.exists():
+                    emb_df = pd.read_parquet(emb_path)
+                    emb_cols = [c for c in emb_df.columns if c.startswith("emb_")]
+                    item_embs = {
+                        str(row["item_id"]): row[emb_cols].values.astype(np.float32)
+                        for _, row in emb_df.iterrows()
+                    }
+                    d_in = len(emb_cols)  # 8
+                    print(f"  Loaded {len(item_embs)} real embeddings ({d_in}-dim PCA)")
+                else:
+                    item_embs = {}
+                    d_in = 64
+                    print("  No embeddings cache — using hash-based fallback")
+
                 reranker = train_reranker(
                     triplets,
-                    item_embeddings={},  # hash-based fallback embeddings
-                    d_in=64, d_model=64,
+                    item_embeddings=item_embs,
+                    d_in=d_in, d_model=max(d_in * 4, 32),
                     epochs=10, lr=1e-3,
                     save_path="models/neural_reranker.pt",
                 )

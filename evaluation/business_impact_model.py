@@ -33,7 +33,8 @@ class ZomatoUnitEconomics:
     avg_delivery_cost: float = 45.0            # INR per order
     gross_margin_per_order: float = 0.06       # ~6% after delivery costs
     avg_recommendation_exposure_rate: float = 0.80  # 80% of orders see CSAO
-    avg_csao_ctr: float = 0.12                 # baseline CTR on add-on suggestions
+    avg_csao_ctr: float = 0.08                 # baseline CTR on add-on suggestions (industry 3-8%)
+    click_to_cart_rate: float = 0.50            # fraction of CTR that converts to actual add-to-cart
 
 
 @dataclass
@@ -94,13 +95,11 @@ def compute_business_impact(
     attach = compute_attach_rate(predictions, k=k)
 
     # Step 2: Map metrics → CTR uplift (calibrated model)
-    # Based on industry benchmarks (DoorDash 2023, UberEats recommendations paper):
-    #   - Baseline CSAO CTR ~12%, NDCG improvements of 0.10 → ~3-6% relative CTR lift
-    #   - Precision@K improvements → higher relevance → lower dismiss rate → higher CTR
-    #   - Our model beats popularity baseline by ~12.4% NDCG (0.806 vs 0.717)
-    # Calibration: CTR_uplift_relative = 0.5 * (NDCG - baseline_NDCG) / baseline_NDCG
-    # where baseline_NDCG ≈ 0.65 (random/popularity average)
-    baseline_ndcg = 0.65  # average of popularity (0.717) and random (0.649) baselines
+    # Calibration: relative_ctr_uplift = 0.5 × (NDCG_improvement / baseline_NDCG)
+    #   - 0.5 is a conservative scaling factor (industry range 0.3-1.0)
+    #   - Accounts for gap between offline ranking quality and online engagement
+    #   - Baseline NDCG = average of popularity (0.612) and random (0.520) baselines
+    baseline_ndcg = 0.566  # avg(popularity=0.612, random=0.520) from offline eval
     ndcg_improvement = max(ndcg - baseline_ndcg, 0.0)
     relative_ctr_uplift = 0.5 * (ndcg_improvement / max(baseline_ndcg, 0.01))
     baseline_ctr = economics.avg_csao_ctr
@@ -113,16 +112,18 @@ def compute_business_impact(
     new_c2o = min(baseline_c2o + c2o_uplift, 0.95)
 
     # Step 4: Compute incremental AOV
+    # CTR delta × click-to-cart conversion × average add-on price
     item_prices = _get_item_prices(predictions, item_catalog, k)
-    avg_addon_price = np.mean(item_prices) if item_prices else 120.0  # fallback INR
-    incremental_aov = (new_ctr - baseline_ctr) * avg_addon_price
+    avg_addon_price = np.mean(item_prices) if item_prices else 90.0  # fallback INR (typical side/beverage)
+    effective_ctr_delta = (new_ctr - baseline_ctr) * economics.click_to_cart_rate
+    incremental_aov = effective_ctr_delta * avg_addon_price
 
     # Step 4: Scale to Zomato
     daily_orders = economics.daily_active_users * economics.avg_orders_per_dau
     exposed_orders = daily_orders * economics.avg_recommendation_exposure_rate
-    orders_with_addon = int(exposed_orders * (new_ctr - baseline_ctr))
+    orders_with_addon = int(exposed_orders * effective_ctr_delta)
 
-    daily_rev = incremental_aov * exposed_orders
+    daily_rev = incremental_aov * exposed_orders  # incremental GMV (not Zomato revenue)
     monthly_rev = daily_rev * 30
     annual_rev = daily_rev * 365
 
@@ -144,9 +145,9 @@ def compute_business_impact(
         precision_at_10=precision,
         attach_rate=attach,
         incremental_aov_per_order=incremental_aov,
-        daily_incremental_revenue=daily_rev,
-        monthly_incremental_revenue=monthly_rev,
-        annual_incremental_revenue=annual_rev,
+        daily_incremental_revenue=daily_rev,      # incremental GMV
+        monthly_incremental_revenue=monthly_rev,  # incremental GMV
+        annual_incremental_revenue=annual_rev,     # incremental GMV (× take_rate for Zomato rev)
         aov_uplift_percent=aov_uplift_pct,
         projected_ctr_uplift=relative_ctr_uplift,
         orders_with_addon_daily=orders_with_addon,
@@ -238,18 +239,21 @@ def _sensitivity_analysis(
     Varies: CTR uplift, take rate, exposure rate, avg addon price.
     """
     rows = []
-    for ctr_mult in [0.5, 0.75, 1.0, 1.25, 1.5]:
-        for take_rate in [0.15, 0.20, 0.25]:
+    # Sensitivity varies: calibration coefficient, baseline CTR, exposure rate
+    base_ndcg_delta = 0.145  # actual: CSAO NDCG (0.711) - baseline (0.566)
+    for calib in [0.25, 0.5, 0.75]:
+        for base_ctr in [0.04, 0.08, 0.12]:
             for exposure in [0.6, 0.8, 0.95]:
-                eff_ctr_uplift = 0.03 * ctr_mult  # 3% base uplift
+                rel_uplift = calib * (base_ndcg_delta / 0.566)
+                eff_ctr_uplift = base_ctr * rel_uplift * 0.50  # ×click_to_cart
                 inc_aov = eff_ctr_uplift * avg_addon_price
-                daily_rev = inc_aov * exposed_orders * (exposure / 0.8) * (take_rate / 0.22)
+                daily_rev = inc_aov * exposed_orders * (exposure / 0.8)
                 rows.append({
-                    "CTR Uplift Multiplier": ctr_mult,
-                    "Take Rate": take_rate,
+                    "Calibration Coeff": calib,
+                    "Baseline CTR": base_ctr,
                     "Exposure Rate": exposure,
-                    "Daily Rev (INR)": daily_rev,
-                    "Annual Rev (INR Cr)": daily_rev * 365 / 1e7,
+                    "Daily GMV (INR)": daily_rev,
+                    "Annual GMV (INR Cr)": daily_rev * 365 / 1e7,
                 })
 
     df = pd.DataFrame(rows)
@@ -304,6 +308,15 @@ def _ab_test_plan(economics: ZomatoUnitEconomics, expected_aov_lift: float) -> d
 
 def format_executive_summary(report: BusinessImpactReport) -> str:
     """Format business impact as a PM-ready executive summary."""
+    take_rate = 0.22
+    annual_zomato_rev = report.annual_incremental_revenue * take_rate
+    # Sensitivity range from the sensitivity table
+    if not report.sensitivity_table.empty and "Annual GMV (INR Cr)" in report.sensitivity_table.columns:
+        lo = report.sensitivity_table["Annual GMV (INR Cr)"].quantile(0.10)
+        hi = report.sensitivity_table["Annual GMV (INR Cr)"].quantile(0.90)
+        range_str = f"₹{lo:.0f}-{hi:.0f} Cr (10th-90th percentile)"
+    else:
+        range_str = "N/A"
     return f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║              CSAO RECOMMENDATION BUSINESS IMPACT            ║
@@ -315,15 +328,18 @@ def format_executive_summary(report: BusinessImpactReport) -> str:
 ║  Precision@10:    {report.precision_at_10:.4f}                           ║
 ║  Attach Rate:     {report.attach_rate:.1%}                           ║
 ║                                                              ║
-║  Revenue Projection                                          ║
-║  ──────────────────                                          ║
+║  Revenue Projection (Incremental GMV)                        ║
+║  ──────────────────────────────────                          ║
 ║  AOV Uplift:      +{report.aov_uplift_percent:.2f}% (+₹{report.incremental_aov_per_order:.1f}/order)    ║
 ║  CTR Uplift:      +{report.projected_ctr_uplift:.1%} (relative)             ║
 ║  C2O Rate:        {report.c2o_rate:.1%} (+{report.c2o_uplift_pp:.1f}pp uplift)       ║
 ║  Items/Order:     +{report.items_per_order_uplift:.2f} uplift                ║
-║  Daily Revenue:   ₹{report.daily_incremental_revenue:,.0f}                  ║
-║  Monthly Revenue: ₹{report.monthly_incremental_revenue:,.0f}                ║
-║  Annual Revenue:  ₹{report.annual_incremental_revenue:,.0f}                 ║
+║  Daily GMV:       ₹{report.daily_incremental_revenue:,.0f}                  ║
+║  Annual GMV:      ₹{report.annual_incremental_revenue:,.0f}                 ║
+║  Annual Zomato Rev: ₹{annual_zomato_rev:,.0f} (@22% take rate)    ║
+║  Range:           {range_str}               ║
+║                                                              ║
+║  ⚠  Pending A/B validation — treat as directional estimate   ║
 ║                                                              ║
 ║  A/B Test Plan                                               ║
 ║  ─────────────                                               ║

@@ -39,14 +39,29 @@ from serving.pipeline.recommendation_service import RecommendationService, Servi
 
 
 def _load_neural_reranker() -> NeuralReranker | None:
-    """Load the neural cross-attention reranker if model file exists."""
+    """Load the neural cross-attention reranker with real embeddings."""
     model_path = Path("models/neural_reranker.pt")
     if model_path.exists():
         try:
+            import pandas as pd
+            # Load real sentence-transformer embeddings (PCA-8)
+            emb_path = Path("data/processed/embeddings_cache.parquet")
+            item_embs = {}
+            d_in = 8  # default: PCA-8
+            if emb_path.exists():
+                emb_df = pd.read_parquet(emb_path)
+                emb_cols = [c for c in emb_df.columns if c.startswith("emb_")]
+                d_in = len(emb_cols)
+                item_embs = {
+                    str(row["item_id"]): row[emb_cols].values.astype(float)
+                    for _, row in emb_df.iterrows()
+                }
+                print(f"[demo] Loaded {len(item_embs)} item embeddings ({d_in}-dim)", flush=True)
             reranker = NeuralReranker(
-                d_in=64,
-                d_model=64,
+                d_in=d_in,
+                d_model=max(d_in * 4, 32),
                 model_path=str(model_path),
+                item_embeddings=item_embs,
                 alpha=0.3,  # 30% neural, 70% LightGBM
             )
             print(f"[demo] Neural reranker loaded (alpha=0.3)", flush=True)
