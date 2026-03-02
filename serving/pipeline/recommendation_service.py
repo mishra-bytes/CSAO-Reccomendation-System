@@ -8,6 +8,7 @@ import pandas as pd
 from candidate_generation.candidate_generator import CandidateGenerator
 from ranking.inference.llm_explainer import explain_recommendations_batch
 from ranking.inference.ranker import CSAORanker
+from ranking.inference.neural_reranker import NeuralReranker
 from serving.api.schemas import RecommendationRequest, RecommendationResponse
 from serving.utils.latency import LatencyTracker
 
@@ -19,6 +20,7 @@ class ServingArtifacts:
     user_features: pd.DataFrame
     item_features: pd.DataFrame
     item_catalog: dict[str, dict] | None = None  # item_id → {item_name, item_category, item_price}
+    neural_reranker: NeuralReranker | None = None  # Optional Stage-2 cross-attention reranker
 
 
 class RecommendationService:
@@ -58,6 +60,27 @@ class RecommendationService:
                 candidates=candidates,
                 top_n=req.top_n or self.default_top_n,
             )
+
+        # Stage 2: Neural cross-attention reranking (optional, <10 ms)
+        if self.artifacts.neural_reranker is not None and ranked:
+            with timer.track("neural_rerank"):
+                # Extract (item_id, score) pairs for reranker input
+                lgbm_pairs = [
+                    (r["item_id"], r.get("score", 0.0))
+                    for r in ranked
+                ]
+                reranked_pairs = self.artifacts.neural_reranker.rerank(
+                    cart_item_ids=req.cart_item_ids,
+                    candidates=lgbm_pairs,
+                    top_n=req.top_n or self.default_top_n,
+                )
+                # Rebuild ranked list with reranked scores, preserving metadata
+                id_to_entry = {r["item_id"]: r for r in ranked}
+                ranked = []
+                for item_id, blended_score in reranked_pairs:
+                    entry = id_to_entry.get(item_id, {"item_id": item_id})
+                    entry["score"] = blended_score
+                    ranked.append(entry)
 
         lat = timer.finalize()
         total_ms = lat.get("total", 0.0)

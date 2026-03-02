@@ -37,6 +37,7 @@ class CSAORanker:
         item_features: pd.DataFrame,
         items: pd.DataFrame,
         complementarity_lookup: dict[tuple[str, str], tuple[float, float]],
+        restaurants: pd.DataFrame | None = None,
     ) -> None:
         self.model = joblib.load(model_path)
         loaded_cols = json.loads(Path(feature_columns_path).read_text(encoding="utf-8"))
@@ -70,6 +71,16 @@ class CSAORanker:
         # Item lookup for cart features
         self.items = items[["item_id", "item_category", "item_price"]].drop_duplicates("item_id")
         self.comp_lookup = complementarity_lookup
+
+        # Restaurant metadata for geographic context features
+        self._rest_meta: dict[str, dict] = {}
+        if restaurants is not None and not restaurants.empty:
+            for _, row in restaurants.iterrows():
+                rid = str(row.get("restaurant_id", ""))
+                self._rest_meta[rid] = {
+                    "city": str(row.get("city", "unknown")),
+                    "cuisine": str(row.get("cuisine", "unknown")),
+                }
 
         # Pre-compute column index mapping for fast assembly
         self._cart_col_indices: dict[str, int] | None = None  # lazy
@@ -179,6 +190,33 @@ class CSAORanker:
             X[:, idx_r] = rest_hash
         if idx_u >= 0:
             X[:, idx_u] = user_hash
+
+        # 4b) Temporal context — current time of request (real-time features)
+        from datetime import datetime
+        now = datetime.now()
+        temporal_feats = {
+            "ctx_hour_of_day": float(now.hour),
+            "ctx_day_of_week": float(now.weekday()),
+            "ctx_is_weekend": float(now.weekday() >= 5),
+            "ctx_is_lunch": float(11 <= now.hour <= 14),
+            "ctx_is_dinner": float(18 <= now.hour <= 22),
+            "ctx_is_late_night": float(now.hour >= 23 or now.hour <= 4),
+        }
+        for name, val in temporal_feats.items():
+            idx = self._col_to_idx.get(name, -1)
+            if idx >= 0:
+                X[:, idx] = val
+
+        # 4c) Geographic context — city/cuisine hash from restaurant metadata
+        rest_row = self._rest_meta.get(str(restaurant_id), {})
+        city_hash = float(abs(hash(rest_row.get("city", "unknown"))) % 100)
+        cuisine_hash = float(abs(hash(rest_row.get("cuisine", "unknown"))) % 50)
+        idx_city = self._col_to_idx.get("ctx_city_hash", -1)
+        idx_cuisine = self._col_to_idx.get("ctx_cuisine_hash", -1)
+        if idx_city >= 0:
+            X[:, idx_city] = city_hash
+        if idx_cuisine >= 0:
+            X[:, idx_cuisine] = cuisine_hash
 
         # 5) User features — looked up once, broadcast
         user_vec = self._user_vectors.get(str(user_id))

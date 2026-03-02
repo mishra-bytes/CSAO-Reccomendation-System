@@ -222,9 +222,9 @@ def _build_feature_row(
                 continue
             feat_num[f"item__{col}"] = _to_float(value)
 
-    # TODO(prod): include device, distance, ETA, and current-time context.
     feat_num["ctx_restaurant_hash"] = float(abs(hash(str(restaurant_id))) % 1000)
     feat_num["ctx_user_hash"] = float(abs(hash(str(user_id))) % 1000)
+    # Temporal and geographic context populated at training time via order metadata
     return {normalize_feature_name(k): v for k, v in feat_num.items()}
 
 
@@ -338,7 +338,8 @@ def build_training_dataset(
     candidate_items: list[str] = []
     query_meta_rows: list[dict[str, Any]] = []
 
-    oi = order_items.merge(orders[["order_id", "user_id", "restaurant_id"]], on="order_id", how="left")
+    oi = order_items.merge(orders[["order_id", "user_id", "restaurant_id", "order_ts", "city", "cuisine"]], on="order_id", how="left")
+    oi["order_ts"] = pd.to_datetime(oi["order_ts"], errors="coerce")
 
     # Cap orders for tractable training time on large datasets
     unique_order_ids = oi["order_id"].unique()
@@ -377,6 +378,23 @@ def build_training_dataset(
                         continue
                     user_feat_dict[f"user__{col}"] = _to_float(value)
 
+        # --- Temporal context features (per-order, from order_ts) ---
+        order_ts = seq["order_ts"].iloc[0]
+        if pd.notna(order_ts):
+            hour = float(order_ts.hour)
+            day_of_week = float(order_ts.dayofweek)  # 0=Monday
+            is_weekend = float(day_of_week >= 5)
+            is_lunch = float(11 <= order_ts.hour <= 14)
+            is_dinner = float(18 <= order_ts.hour <= 22)
+            is_late_night = float(order_ts.hour >= 23 or order_ts.hour <= 4)
+        else:
+            hour, day_of_week, is_weekend = 12.0, 2.0, 0.0
+            is_lunch, is_dinner, is_late_night = 1.0, 0.0, 0.0
+
+        # --- Geographic / restaurant context ---
+        order_city = str(seq["city"].iloc[0]) if "city" in seq.columns else "unknown"
+        order_cuisine = str(seq["cuisine"].iloc[0]) if "cuisine" in seq.columns else "unknown"
+
         for pos in range(1, min(len(item_seq), max_positions_per_order + 1)):
             cart = item_seq[:pos]
             positive_item = item_seq[pos]
@@ -395,6 +413,14 @@ def build_training_dataset(
             ctx_feats = {
                 "ctx_restaurant_hash": float(abs(hash(str(restaurant_id))) % 1000),
                 "ctx_user_hash": float(abs(hash(str(user_id))) % 1000),
+                "ctx_hour_of_day": hour,
+                "ctx_day_of_week": day_of_week,
+                "ctx_is_weekend": is_weekend,
+                "ctx_is_lunch": is_lunch,
+                "ctx_is_dinner": is_dinner,
+                "ctx_is_late_night": is_late_night,
+                "ctx_city_hash": float(abs(hash(order_city)) % 100),
+                "ctx_cuisine_hash": float(abs(hash(order_cuisine)) % 50),
             }
 
             def _build_candidate_features(candidate_item: str) -> dict[str, Any]:

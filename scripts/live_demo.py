@@ -32,9 +32,32 @@ from pydantic import BaseModel
 from candidate_generation.candidate_generator import CandidateGenerator
 from features.complementarity import build_complementarity_lookup
 from ranking.inference.ranker import CSAORanker
+from ranking.inference.neural_reranker import NeuralReranker
 from scripts._utils import load_feature_tables, load_project_config, load_unified_tables
 from serving.api.schemas import RecommendationRequest
 from serving.pipeline.recommendation_service import RecommendationService, ServingArtifacts
+
+
+def _load_neural_reranker() -> NeuralReranker | None:
+    """Load the neural cross-attention reranker if model file exists."""
+    model_path = Path("models/neural_reranker.pt")
+    if model_path.exists():
+        try:
+            reranker = NeuralReranker(
+                d_in=64,
+                d_model=64,
+                model_path=str(model_path),
+                alpha=0.3,  # 30% neural, 70% LightGBM
+            )
+            print(f"[demo] Neural reranker loaded (alpha=0.3)", flush=True)
+            return reranker
+        except Exception as e:
+            print(f"[demo] Neural reranker skipped: {e}", flush=True)
+            return None
+    else:
+        print("[demo] No neural_reranker.pt found, using LightGBM only", flush=True)
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Data Loading
@@ -75,6 +98,7 @@ ranker = CSAORanker(
     item_features=feats["item_features"],
     items=unified["items"],
     complementarity_lookup=comp_lookup,
+    restaurants=unified.get("restaurants"),
 )
 
 # ── Build realistic demo catalog (cuisine-aware dish names & restaurant names) ─
@@ -149,6 +173,7 @@ service = RecommendationService(
         user_features=feats["user_features"],
         item_features=feats["item_features"],
         item_catalog=item_catalog,
+        neural_reranker=_load_neural_reranker(),
     ),
     config=config,
 )

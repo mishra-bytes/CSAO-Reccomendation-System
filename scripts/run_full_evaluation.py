@@ -165,6 +165,9 @@ def main() -> None:
             "daily_revenue_inr": biz.daily_incremental_revenue,
             "monthly_revenue_inr": biz.monthly_incremental_revenue,
             "annual_revenue_inr": biz.annual_incremental_revenue,
+            "c2o_rate": biz.c2o_rate,
+            "c2o_uplift_pp": biz.c2o_uplift_pp,
+            "items_per_order_uplift": biz.items_per_order_uplift,
             "ab_test_plan": biz.ab_test_plan,
         }
     except Exception as e:

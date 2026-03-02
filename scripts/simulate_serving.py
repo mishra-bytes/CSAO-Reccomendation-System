@@ -56,6 +56,7 @@ def main() -> None:
         item_features=feats["item_features"],
         items=unified["items"],
         complementarity_lookup=comp_lookup,
+        restaurants=unified.get("restaurants"),
     )
 
     # Build item catalog dict for LLM explainer

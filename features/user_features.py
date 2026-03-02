@@ -26,6 +26,29 @@ def build_user_features(
 
     avg_order_value = orders_local.groupby("user_id")["total_value"].mean().rename("avg_order_value").reset_index()
 
+    # --- RFM Recency: days since last order (lower = more recent) ---
+    ref_date = orders_local["order_ts"].max()
+    recency = (
+        orders_local.groupby("user_id")["order_ts"]
+        .max()
+        .rename("last_order_ts")
+        .reset_index()
+    )
+    recency["recency_days"] = (ref_date - recency["last_order_ts"]).dt.days.clip(lower=0)
+    recency = recency[["user_id", "recency_days"]]
+
+    # --- Total monetary value (RFM 'M') ---
+    total_spend = orders_local.groupby("user_id")["total_value"].sum().rename("total_spend").reset_index()
+
+    # --- User segment (budget / mid / premium) based on avg order value ---
+    def _user_segment(aov: float) -> float:
+        if aov < 250:
+            return 0.0  # budget
+        elif aov < 500:
+            return 1.0  # mid
+        else:
+            return 2.0  # premium
+
     cuisine_pivot = (
         orders_local.assign(cnt=1)
         .pivot_table(index="user_id", columns="cuisine", values="cnt", aggfunc="sum", fill_value=0)
@@ -50,11 +73,14 @@ def build_user_features(
 
     feats = (
         users[["user_id"]]
-        .merge(order_freq[["user_id", "order_frequency"]], on="user_id", how="left")
+        .merge(order_freq[["user_id", "order_count", "order_frequency"]], on="user_id", how="left")
         .merge(avg_order_value, on="user_id", how="left")
+        .merge(recency, on="user_id", how="left")
+        .merge(total_spend, on="user_id", how="left")
         .merge(cuisine_share, on="user_id", how="left")
         .merge(user_price[["user_id", "price_sensitivity"]], on="user_id", how="left")
     )
+    feats["user_segment"] = feats["avg_order_value"].apply(_user_segment)
     feats = feats.fillna(0.0)
     numeric_cols = [c for c in feats.columns if c != "user_id"]
     feats[numeric_cols] = feats[numeric_cols].replace([np.inf, -np.inf], 0.0)
