@@ -217,38 +217,53 @@ Five-strategy cascade for handling new users and restaurants:
 
 ---
 
-## 8. Deployment Topology (Production)
+## 8. Deployment Topology
+
+### Current Implementation (Hackathon)
+
+The system is containerised via Docker and served with FastAPI + Uvicorn:
 
 ```
-                    ┌──────────────┐
-                    │ Load Balancer │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ CSAO API │ │ CSAO API │ │ CSAO API │  (14 pods, HPA)
-        │  Pod 1   │ │  Pod 2   │ │  Pod N   │  2 vCPU, 4 GiB
-        └────┬─────┘ └────┬─────┘ └────┬─────┘
-             │             │             │
-             └─────────────┼─────────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │  Redis   │ │  Model   │ │ Prom /   │
-        │ Features │ │  (S3)    │ │ Grafana  │
-        └──────────┘ └──────────┘ └──────────┘
+┌──────────────────┐      ┌──────────────────┐
+│   Docker Host     │      │  Artifacts (local)│
+│  ┌──────────────┐ │      │  models/          │
+│  │ FastAPI +     │ │──────│  data/processed/  │
+│  │ Uvicorn      │ │      │  configs/         │
+│  │ (4 workers)  │ │      └──────────────────┘
+│  └──────────────┘ │
+│  /health, /recommend│
+│  /metrics           │
+└──────────────────┘
 ```
 
-- **Auto-scaling**: HPA targets 60% CPU, min=7 pods, max=28 pods
-- **Canary rollout**: 5% → 25% → 50% → 100% with automated rollback
-- **Cache hit rate**: 86.1% (simulated), saving ~4.2ms per request
-- **Estimated cost**: $1,120/month for 500 QPS peak capacity
+Run locally:
+```bash
+python -m serving.api.main          # Direct
+docker build -t csao-reco . && docker run -p 8000:8000 csao-reco  # Docker
+```
+
+Endpoints:
+- `GET /health` — readiness check
+- `POST /recommend` — single-query recommendation
+- `POST /recommend/batch` — batch recommendation
+- `GET /metrics` — latency stats and status
+
+### Production Scaling Notes (Not Yet Implemented)
+
+For production deployment, the architecture is designed to scale with:
+- **Horizontal pod autoscaling** (Kubernetes HPA) based on CPU/latency
+- **Redis** for online feature store (user, item, complementarity lookups)
+- **S3/GCS** for model artifact storage
+- **Prometheus + Grafana** for real-time monitoring
+
+These are engineering recommendations for future deployment, not current implementation.
 
 ---
 
-## 9. Monitoring Plan
+## 9. Monitoring Plan (Production Roadmap)
+
+> **Note:** The following describes the *recommended* monitoring setup for production.
+> The current implementation provides basic `/metrics` endpoint and in-process `LatencyTracker`.
 
 | Dashboard | Key Metrics | Alert Threshold |
 |-----------|------------|-----------------|

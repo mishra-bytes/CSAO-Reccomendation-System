@@ -1,0 +1,2 @@
+avg_popularity_percentile,popularity_gini,catalog_coverage_pct,long_tail_coverage_pct,reco_avg_price,catalog_avg_price,reco_median_price,catalog_median_price,price_ratio,category_kl_divergence
+0.5248532929655378,0.0654434850863422,100.0,100.0,250.70666881587798,250.53495833333332,253.17000000000002,252.76500000000001,1.0006853753411777,0.00019946188162461745

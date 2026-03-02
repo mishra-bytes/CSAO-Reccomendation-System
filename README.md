@@ -1,6 +1,6 @@
 # Cart Super Add-On (CSAO) Recommender
 
-Production-style hackathon scaffold for real-time cart-aware add-on recommendations in food delivery.
+Cart-aware, real-time add-on recommendation engine for food delivery — built with LightGBM LambdaRank, complementarity features, LLM-powered explanations, and a FastAPI serving layer.
 
 ## Objectives
 
@@ -37,7 +37,7 @@ python scripts/simulate_serving.py
 - `evaluation/`: ranking quality, coverage, diversity, segment analysis
 - `serving/`: low-latency recommendation pipeline simulation
 - `configs/`: centralized YAML configs
-- `experiments/`: ablation and comparison placeholders
+- `experiments/`: ablation studies, model comparisons, A/B simulation, SHAP analysis
 - `docs/`: system design and production notes
 
 ## Data Contracts
@@ -57,6 +57,38 @@ Unified tables produced in `data/processed/`:
 
 ## Notes
 
-- Synthetic fallback data is enabled by default for hackathon speed.
-- Replace synthetic data with real datasets by updating `configs/base.yaml`.
-- TODO markers in code indicate production hardening gaps.
+- Synthetic data is used for development and demonstration.
+- Replace with real datasets by updating `configs/base.yaml`.
+- See `docs/` for system design, latency analysis, and A/B testing plan.
+
+## Additional Scripts
+
+```bash
+# SHAP feature importance
+python -m experiments.feature_importance.shap_analysis
+
+# Ablation studies
+python -m experiments.ablations.no_complementarity
+python -m experiments.ablations.no_session_evolution
+
+# Model comparison (LightGBM vs XGBoost vs MLP vs Popularity)
+python -m experiments.model_comparisons.compare_rankers
+
+# A/B test offline simulation
+python -m experiments.ab_test_simulator
+
+# Error analysis (bottom-20% queries)
+python -m evaluation.error_analysis
+
+# Diversity & fairness analysis
+python -m evaluation.fairness_analysis
+
+# Cold-start validation
+python -m experiments.cold_start_validation
+
+# HP tuning (Optuna, 100 trials)
+python -m experiments.ablations.tuning_and_ablation
+
+# Serve API
+python -m serving.api.main
+```

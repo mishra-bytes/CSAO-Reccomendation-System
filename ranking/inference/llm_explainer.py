@@ -22,14 +22,51 @@ Why this matters for Zomathon scoring:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Explanation cache — avoids repeated LLM calls for identical (cart, item)
+# ---------------------------------------------------------------------------
+_CACHE_DIR = Path("data/cache/llm_explanations")
+_MEM_CACHE: dict[str, str] = {}
+
+
+def _cache_key(cart_item_ids: list[str], candidate_id: str) -> str:
+    """Deterministic hash for a (cart, candidate) pair."""
+    raw = json.dumps(sorted(cart_item_ids) + [candidate_id], sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _cache_get(key: str) -> str | None:
+    """Look up explanation from in-memory then disk cache."""
+    if key in _MEM_CACHE:
+        return _MEM_CACHE[key]
+    path = _CACHE_DIR / f"{key}.txt"
+    if path.exists():
+        text = path.read_text(encoding="utf-8").strip()
+        _MEM_CACHE[key] = text
+        return text
+    return None
+
+
+def _cache_put(key: str, explanation: str) -> None:
+    """Persist explanation to memory and disk."""
+    _MEM_CACHE[key] = explanation
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (_CACHE_DIR / f"{key}.txt").write_text(explanation, encoding="utf-8")
+    except OSError:
+        pass  # non-critical
 
 
 @dataclass
@@ -249,27 +286,63 @@ def explain_recommendations_batch(
         )
 
     # --- LLM Enhancement Layer (OpenRouter) ---
-    if use_llm and os.environ.get("OPENROUTER_API_KEY"):
-        try:
-            llm_lines = _llm_explain_batch(
-                ranked_items=ranked_items,
-                cart_info=cart_info,
-                item_catalog=item_catalog,
-            )
-            if llm_lines:
-                for i, line in enumerate(llm_lines):
-                    if i < len(explanations) and line:
-                        # Overlay LLM explanation, keep template reason_tags
-                        explanations[i] = RecommendationExplanation(
-                            item_id=explanations[i].item_id,
-                            item_name=explanations[i].item_name,
-                            explanation=line,
-                            confidence=min(1.0, explanations[i].confidence + 0.1),
-                            reason_tags=explanations[i].reason_tags + ["llm_enhanced"],
-                            meal_context=explanations[i].meal_context,
-                        )
-        except Exception as e:
-            logger.warning("LLM enhancement failed, using templates: %s", e)
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if use_llm and api_key:
+        # Check disk/memory cache first for each item
+        cached_hits = 0
+        for i, item in enumerate(ranked_items):
+            iid = str(item["item_id"])
+            key = _cache_key(cart_item_ids, iid)
+            cached = _cache_get(key)
+            if cached and i < len(explanations):
+                explanations[i] = RecommendationExplanation(
+                    item_id=explanations[i].item_id,
+                    item_name=explanations[i].item_name,
+                    explanation=cached,
+                    confidence=min(1.0, explanations[i].confidence + 0.1),
+                    reason_tags=explanations[i].reason_tags + ["llm_enhanced", "cached"],
+                    meal_context=explanations[i].meal_context,
+                )
+                cached_hits += 1
+
+        # For uncached items, call API
+        uncached_indices = [
+            i for i, item in enumerate(ranked_items)
+            if _cache_get(_cache_key(cart_item_ids, str(item["item_id"]))) is None
+        ]
+
+        if uncached_indices:
+            try:
+                llm_lines = _llm_explain_batch(
+                    ranked_items=[ranked_items[i] for i in uncached_indices],
+                    cart_info=cart_info,
+                    item_catalog=item_catalog,
+                )
+                if llm_lines:
+                    for j, line in enumerate(llm_lines):
+                        if j < len(uncached_indices) and line:
+                            idx = uncached_indices[j]
+                            if idx < len(explanations):
+                                explanations[idx] = RecommendationExplanation(
+                                    item_id=explanations[idx].item_id,
+                                    item_name=explanations[idx].item_name,
+                                    explanation=line,
+                                    confidence=min(1.0, explanations[idx].confidence + 0.1),
+                                    reason_tags=explanations[idx].reason_tags + ["llm_enhanced"],
+                                    meal_context=explanations[idx].meal_context,
+                                )
+                                # Cache the new explanation
+                                iid = str(ranked_items[idx]["item_id"])
+                                _cache_put(_cache_key(cart_item_ids, iid), line)
+                    logger.info("LLM explanations: %d cached, %d from API", cached_hits, len(llm_lines))
+            except Exception as e:
+                logger.warning("LLM enhancement failed, using templates: %s", e)
+        else:
+            logger.info("LLM explanations: all %d served from cache", cached_hits)
+    elif use_llm:
+        logger.info("LLM disabled — OPENROUTER_API_KEY not set; using template fallback")
+    else:
+        logger.debug("LLM explanations disabled by caller; using template fallback")
 
     return explanations
 

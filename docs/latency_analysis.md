@@ -92,24 +92,31 @@ The `LatencyTracker` (in `serving/utils/latency.py`) provides:
 
 ---
 
-## 5. Cache Strategy
+## 5. Cache Strategy (Design — Not Yet Implemented)
 
-| Cache Layer | Hit Rate | Saving | TTL |
-|------------|----------|--------|-----|
+> **Note:** The cache layer described below is the *recommended production design*.
+> The current implementation uses in-memory Python dicts for feature lookups at startup.
+> LLM explanations have a file-based cache in `data/cache/llm_explanations/`.
+
+| Cache Layer | Expected Hit Rate | Saving | TTL |
+|------------|-------------------|--------|-----|
 | **User feature** | ~95% | 5–10ms per miss | 1 hour |
 | **Item feature** | ~99% | 3–5ms per miss | 24 hours |
 | **Complementarity** | ~92% | 2–3ms per miss | 24 hours |
 | **Restaurant menu** | ~86% | 15–20ms per miss | 6 hours |
 | **Full response (LRU)** | ~86% | 100ms+ (full bypass) | 5 min |
 
-Simulated overall cache hit rate: **86.1%**, saving ~4.2ms average per lookup.
+These are *projected* rates based on the data distribution; actual production rates will depend on traffic patterns.
 
 ---
 
-## 6. Scaling Considerations
+## 6. Scaling Considerations (Production Projections)
 
-| Scenario | QPS | Pods | p95 Latency |
-|----------|-----|------|------------|
+> **Note:** The numbers below are *estimates* based on Little's Law, not measured production metrics.
+> The current implementation runs as a single Docker container with Uvicorn (4 workers).
+
+| Scenario | QPS | Projected Pods | Estimated p95 Latency |
+|----------|-----|----------------|----------------------|
 | Normal (off-peak) | 100 | 7 | ~120ms |
 | Lunch rush | 350 | 10 | ~160ms |
 | Peak dinner | 500 | 14 | ~180ms |
@@ -119,9 +126,15 @@ Little's Law: `pods = ceil(QPS × latency_s / (workers_per_pod × utilization_ta
 
 ---
 
-## 7. Production Monitoring
+## 7. Monitoring (Current + Recommended)
 
-- **p95/p99 stage metrics**: LatencyTracker auto-collects per-stage histograms
-- **Slow request logging**: Requests >250ms are logged with full stage breakdown
-- **Real-time alerting**: p95 > 200ms triggers PagerDuty alert
-- **Redis cache hit-rate tracking**: Monitor for cache degradation
+**Implemented:**
+- Per-stage timing via `LatencyTracker` (in `serving/utils/latency.py`)
+- `/metrics` endpoint with p50/p95/p99 and stage breakdown
+- Automatic quality degradation when latency > 300ms
+
+**Recommended for production (not yet implemented):**
+- Prometheus metrics export + Grafana dashboards
+- Slow request logging (>250ms) with full stage breakdown
+- PagerDuty alerting on p95 > 200ms
+- Redis cache hit-rate monitoring

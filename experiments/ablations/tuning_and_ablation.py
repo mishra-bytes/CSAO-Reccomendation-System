@@ -32,13 +32,15 @@ def run_optuna_tuning(
     item_features: pd.DataFrame,
     comp_lookup: dict,
     config: dict[str, Any],
-    n_trials: int = 30,
-    timeout_seconds: int = 600,
+    n_trials: int = 100,
+    timeout_seconds: int = 1800,
+    output_dir: str = "artifacts/tuning",
 ) -> dict[str, Any]:
     """Bayesian hyperparameter optimization for LightGBM ranker.
 
-    Search space covers the most impactful LambdaRank hyperparameters
-    while respecting hackathon compute constraints.
+    Search space covers the most impactful LambdaRank hyperparameters.
+    Defaults to 100 trials / 30-minute timeout for thorough search.
+    Saves best params, convergence plot, and optimization history.
     """
     try:
         import optuna
@@ -50,7 +52,18 @@ def run_optuna_tuning(
     from ranking.training.train import _temporal_train_valid_split, _group_from_query_ids
     from evaluation.metrics.ranking_metrics import ndcg_at_k
 
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    # Set global seed for reproducibility
+    seed = int(config.get("ranking", {}).get("random_state", 42))
+    np.random.seed(seed)
 
     # Build dataset once
     ranking_cfg = config.get("ranking", {})
@@ -64,7 +77,6 @@ def run_optuna_tuning(
 
     orders = unified.get("orders", pd.DataFrame())
     val_frac = float(config.get("train", {}).get("validation_fraction", 0.2))
-    seed = int(ranking_cfg.get("random_state", 42))
     train_idx, val_idx = _temporal_train_valid_split(data, orders, val_frac, seed)
 
     X_train, y_train = data.X.iloc[train_idx], data.y[train_idx]
@@ -104,13 +116,45 @@ def run_optuna_tuning(
         })
         return ndcg_at_k(preds, k=10)
 
-    study = optuna.create_study(direction="maximize", study_name="csao_lgbm_hp")
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study = optuna.create_study(direction="maximize", study_name="csao_lgbm_hp", sampler=sampler)
     study.optimize(objective, n_trials=n_trials, timeout=timeout_seconds)
+
+    # ── Save best params ──────────────────────────────────────────────────
+    best_params_path = out / "best_params.json"
+    best_params_path.write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
+    print(f"[tuning] Best params saved → {best_params_path}")
+
+    # ── Optimization history ──────────────────────────────────────────────
+    history = []
+    best_so_far = -np.inf
+    for t in study.trials:
+        val = t.value if t.value is not None else 0.0
+        best_so_far = max(best_so_far, val)
+        history.append({"trial": t.number, "value": val, "best_so_far": best_so_far})
+    hist_df = pd.DataFrame(history)
+    hist_path = out / "optimization_history.csv"
+    hist_df.to_csv(hist_path, index=False)
+
+    # ── Convergence plot ──────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(hist_df["trial"], hist_df["value"], "o-", alpha=0.4, markersize=3, label="Trial NDCG@10")
+    ax.plot(hist_df["trial"], hist_df["best_so_far"], "-", color="red", linewidth=2, label="Best so far")
+    ax.set_xlabel("Trial")
+    ax.set_ylabel("NDCG@10")
+    ax.set_title(f"Optuna HP Convergence ({len(study.trials)} trials)")
+    ax.legend()
+    fig.tight_layout()
+    plot_path = out / "convergence_plot.png"
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"[tuning] Convergence plot saved → {plot_path}")
 
     return {
         "best_params": study.best_params,
         "best_ndcg": study.best_value,
         "n_trials_completed": len(study.trials),
+        "output_dir": str(out),
         "trials_summary": [
             {"number": t.number, "value": t.value, "params": t.params}
             for t in sorted(study.trials, key=lambda t: t.value or 0, reverse=True)[:5]

@@ -1,6 +1,5 @@
 """Quick training test script."""
 import sys
-sys.path.insert(0, r"D:\Work\Hackathons\Zomato")
 
 print("START", flush=True)
 from scripts._utils import load_project_config, load_unified_tables, load_feature_tables

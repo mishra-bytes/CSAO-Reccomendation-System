@@ -1,0 +1,7 @@
+scenario,classification,strategy,confidence,n_candidates,n_unique_categories,explanation
+"Fully Cold — no user, no cart, unknown restaurant",new_user_empty_cart_unknown_rest,global_diverse_popular,0.3,10,5,"Fully cold start: no user history, no cart, no restaurant. Using category-diverse global popularity."
+"New user, empty cart, known restaurant",new_user_empty_cart_unknown_rest,global_diverse_popular,0.3,10,5,"Fully cold start: no user history, no cart, no restaurant. Using category-diverse global popularity."
+"New user, 1-item cart, known restaurant",new_user_with_cart_unknown_rest,cart_aware_global_popular,0.5,10,3,New user with cart at unknown restaurant. Using global popularity with category diversity bias.
+"New user, 1-item cart, unknown restaurant",new_user_with_cart_unknown_rest,cart_aware_global_popular,0.5,10,3,New user with cart at unknown restaurant. Using global popularity with category diversity bias.
+"New user, sparse cart (2 items), known restaurant",new_user_with_cart_unknown_rest,cart_aware_global_popular,0.5,10,3,New user with cart at unknown restaurant. Using global popularity with category diversity bias.
+Warm user baseline (for comparison),warm_user,warm_user,1.0,0,0,User has sufficient history; delegate to main pipeline.

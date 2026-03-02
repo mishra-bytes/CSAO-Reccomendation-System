@@ -1,0 +1,2 @@
+control_queries,treatment_queries,control_ndcg,treatment_ndcg,ndcg_lift,ndcg_lift_ci_lower,ndcg_lift_ci_upper,control_precision,treatment_precision,control_attach_rate,treatment_attach_rate,attach_rate_lift_pp,z_statistic,p_value,significant_at_005
+1274,1274,0.5165876534176576,0.5786450263801853,0.06205737296252778,0.04394591650603004,0.07791789754379637,0.1,0.1,1.0,1.0,0.0,0.0,1.0,False

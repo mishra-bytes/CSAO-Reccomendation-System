@@ -1,0 +1,3 @@
+variant,ndcg_10,precision_10,recall_10,n_features,ndcg_delta,precision_delta,recall_delta
+full_model,0.5828211541218785,0.1,1.0,67,0.0,0.0,0.0
+no_complementarity,0.5666487175531895,0.1,1.0,63,-0.016172436568689053,0.0,0.0

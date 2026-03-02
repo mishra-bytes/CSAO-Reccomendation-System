@@ -1,0 +1,3 @@
+segment,n_queries,ndcg@10,precision@10,recall@10
+cold_start (very low freq),2548,0.5860050976679619,0.1,1.0
+ALL,2548,0.5860050976679619,0.1,1.0

@@ -7,4 +7,4 @@ Suggested experiment tracks:
 - Compare rankers: LightGBM vs baseline heuristic
 - Compare retrieval blends and candidate budgets
 
-TODO(prod): wire experiment tracking backend (MLflow/W&B).
+**Future work:** wire experiment tracking backend (MLflow / W&B) for production use.

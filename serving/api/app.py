@@ -136,6 +136,19 @@ if HAS_FASTAPI:
         stats = svc.get_latency_stats() if hasattr(svc, "get_latency_stats") else {}
         return LatencyStatsResponse(stats=stats)
 
+    @app.get("/metrics")
+    def metrics():
+        """Prometheus-style metrics endpoint with real latency stats."""
+        svc = _service
+        if svc is None:
+            return {"status": "not_ready"}
+        stats = svc.get_latency_stats() if hasattr(svc, "get_latency_stats") else {}
+        return {
+            "status": "ok",
+            "model_loaded": True,
+            "latency": stats,
+        }
+
 else:
     # Fallback when FastAPI isn't installed
     app = None
