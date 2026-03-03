@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import pandas as pd
@@ -79,13 +80,29 @@ class CandidateGenerator:
         # can be recommended.  Prevents cross-cuisine contamination.
         menu_items = self._restaurant_menu.get(str(restaurant_id), set())
 
-        co = self.co_retriever.retrieve(cart_items, k=self.co_k)
-        pop = self.pop_retriever.retrieve(restaurant_id=restaurant_id, exclude=exclude, k=self.pop_k)
-        cat = self.cat_retriever.retrieve(cart_items=cart_items, restaurant_id=restaurant_id, exclude=exclude, k=self.cat_k)
-        session = self.session_retriever.retrieve(cart_items=cart_items, exclude=exclude, k=self.session_k)
-        meal_gap = self.meal_gap_retriever.retrieve(
-            cart_items=cart_items, restaurant_id=restaurant_id, exclude=exclude, k=self.meal_gap_k,
-        )
+        # ── Run all five retrievers in parallel (I/O-bound lookups) ────
+        def _co():
+            return self.co_retriever.retrieve(cart_items, k=self.co_k)
+        def _pop():
+            return self.pop_retriever.retrieve(restaurant_id=restaurant_id, exclude=exclude, k=self.pop_k)
+        def _cat():
+            return self.cat_retriever.retrieve(cart_items=cart_items, restaurant_id=restaurant_id, exclude=exclude, k=self.cat_k)
+        def _session():
+            return self.session_retriever.retrieve(cart_items=cart_items, exclude=exclude, k=self.session_k)
+        def _meal_gap():
+            return self.meal_gap_retriever.retrieve(cart_items=cart_items, restaurant_id=restaurant_id, exclude=exclude, k=self.meal_gap_k)
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            f_co = pool.submit(_co)
+            f_pop = pool.submit(_pop)
+            f_cat = pool.submit(_cat)
+            f_session = pool.submit(_session)
+            f_meal_gap = pool.submit(_meal_gap)
+        co = f_co.result()
+        pop = f_pop.result()
+        cat = f_cat.result()
+        session = f_session.result()
+        meal_gap = f_meal_gap.result()
 
         # Determine cart course types for course-type aware filtering:
         # penalise recommending another main_course when cart already has one.
