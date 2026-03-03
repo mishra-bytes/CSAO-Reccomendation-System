@@ -202,6 +202,9 @@ def run_baseline_comparison(
         coverage_at_k, ndcg_at_k, precision_at_k, recall_at_k,
     )
     from evaluation.metrics.business_impact import compute_attach_rate
+    from evaluation.metrics.statistical_tests import (
+        bootstrap_ci, paired_bootstrap_test, wilcoxon_signed_rank_test,
+    )
 
     models = {
         "CSAO_LightGBM": validation_predictions,
@@ -223,7 +226,29 @@ def run_baseline_comparison(
             "coverage@10": coverage_at_k(preds, item_catalog, k=k),
             "attach_rate": compute_attach_rate(preds, k=k),
         }
+        # Bootstrap 95% CI on NDCG
+        try:
+            ci = bootstrap_ci(preds, ndcg_at_k, k=k, n_bootstrap=500)
+            row["ndcg_ci_95"] = f"[{ci['ci_lower']:.4f}, {ci['ci_upper']:.4f}]"
+        except Exception:
+            row["ndcg_ci_95"] = "N/A"
         rows.append(row)
 
+    # Statistical significance: CSAO vs each baseline
+    sig_results = {}
+    csao_preds = models["CSAO_LightGBM"]
+    for baseline_name in ["Popularity", "CoOccurrence", "Random"]:
+        baseline_preds = models[baseline_name]
+        try:
+            paired = paired_bootstrap_test(csao_preds, baseline_preds, ndcg_at_k, k=k, n_bootstrap=1000)
+            wilcoxon = wilcoxon_signed_rank_test(csao_preds, baseline_preds, k=k)
+            sig_results[f"CSAO_vs_{baseline_name}"] = {
+                "paired_bootstrap": paired,
+                "wilcoxon": wilcoxon,
+            }
+        except Exception as e:
+            sig_results[f"CSAO_vs_{baseline_name}"] = {"error": str(e)}
+
     comparison = pd.DataFrame(rows).set_index("model")
+    comparison.attrs["significance_tests"] = sig_results
     return comparison

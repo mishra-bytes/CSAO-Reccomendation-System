@@ -8,6 +8,7 @@ from evaluation.metrics.business_impact import evaluate_business_impact
 from evaluation.metrics.diversity import intra_list_diversity_at_k
 from evaluation.metrics.llm_judge import run_llm_judge
 from evaluation.metrics.ranking_metrics import coverage_at_k, ndcg_at_k, precision_at_k, recall_at_k
+from evaluation.metrics.statistical_tests import bootstrap_ci
 from evaluation.segments.segment_analysis import run_segment_analysis
 
 
@@ -25,6 +26,15 @@ def evaluate_offline(
         "coverage_at_k": coverage_at_k(predictions, item_catalog, k=k),
         "diversity_at_k": intra_list_diversity_at_k(predictions, item_catalog, k=k),
     }
+
+    # Bootstrap 95% confidence interval for NDCG@k
+    try:
+        ndcg_ci = bootstrap_ci(predictions, ndcg_at_k, k=k, n_bootstrap=500)
+        base["ndcg_ci_95"] = f"[{ndcg_ci['ci_lower']:.4f}, {ndcg_ci['ci_upper']:.4f}]"
+        base["ndcg_std"] = ndcg_ci["std"]
+    except Exception:
+        pass
+
     segment = run_segment_analysis(predictions, query_meta=query_meta, user_features=user_features, k=k)
 
     # Business impact proxy metrics
