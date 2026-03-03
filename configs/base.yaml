@@ -19,7 +19,7 @@ data:
 
 feature_build:
   max_cart_categories: 12
-  min_item_support: 2
+  min_item_support: 10
 
 candidate_generation:
   total_candidates: 200

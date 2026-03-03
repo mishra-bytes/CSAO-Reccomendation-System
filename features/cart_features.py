@@ -14,12 +14,12 @@ from common.feature_names import normalize_feature_name
 # Used for cart completeness scoring and missing-category detection.
 # ---------------------------------------------------------------------------
 MEAL_ARCHETYPES: list[set[str]] = [
-    {"main_course", "beverage"},
-    {"main_course", "beverage", "dessert"},
-    {"main_course", "starter", "beverage"},
-    {"main_course", "starter", "dessert", "beverage"},
-    {"main_course", "addon"},
-    {"starter", "main_course"},
+    {"main_course", "addon", "beverage"},             # standard Indian meal (curry + bread + drink)
+    {"main_course", "addon", "beverage", "dessert"},  # full meal
+    {"main_course", "starter", "addon", "beverage"},  # elaborate meal
+    {"main_course", "starter", "addon", "dessert", "beverage"},  # party/feast
+    {"main_course", "addon"},                         # quick meal (curry + bread/rice)
+    {"starter", "beverage"},                          # snack combo
 ]
 
 
@@ -83,6 +83,7 @@ def build_cart_feature_vector(
             "cart_has_beverage": 0.0,
             "cart_has_dessert": 0.0,
             "cart_has_starter": 0.0,
+            "cart_has_addon": 0.0,
         }
 
     lookup = item_lookup.set_index("item_id", drop=False) if item_lookup.index.name != "item_id" else item_lookup
@@ -129,6 +130,7 @@ def build_cart_feature_vector(
         "cart_has_beverage": float("beverage" in category_set),
         "cart_has_dessert": float("dessert" in category_set),
         "cart_has_starter": float("starter" in category_set),
+        "cart_has_addon": float("addon" in category_set),
     }
     for cat in top_categories:
         safe_cat = normalize_feature_name(cat)

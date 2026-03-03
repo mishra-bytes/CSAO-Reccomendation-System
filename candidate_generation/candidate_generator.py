@@ -55,12 +55,19 @@ class CandidateGenerator:
             if "item_category" in items.columns else {}
         )
 
+        # Build item → is_veg lookup for dietary preference filtering
+        self._item_is_veg: dict[str, bool] = (
+            items.set_index("item_id")["is_veg"].astype(bool).to_dict()
+            if "is_veg" in items.columns else {}
+        )
+
         # Retriever weights — tuned for CSAO where cart-aware signals dominate
+        # Defaults match configs/base.yaml; override via config dict.
         self._weights = {
-            "cooccurrence": float(self.cfg.get("w_cooccurrence", 0.35)),
-            "session": float(self.cfg.get("w_session", 0.15)),
-            "meal_gap": float(self.cfg.get("w_meal_gap", 0.20)),
-            "category": float(self.cfg.get("w_category", 0.20)),
+            "cooccurrence": float(self.cfg.get("w_cooccurrence", 0.40)),
+            "session": float(self.cfg.get("w_session", 0.20)),
+            "meal_gap": float(self.cfg.get("w_meal_gap", 0.15)),
+            "category": float(self.cfg.get("w_category", 0.15)),
             "popularity": float(self.cfg.get("w_popularity", 0.10)),
         }
 
@@ -89,6 +96,12 @@ class CandidateGenerator:
                 cart_cats.add(cat_val)
         has_main = "main_course" in cart_cats
 
+        # Veg/non-veg preference: if ALL cart items are veg, filter out non-veg
+        # candidates (models the stricty-vegetarian user pattern common in India)
+        cart_all_veg = all(
+            self._item_is_veg.get(str(ci), True) for ci in cart_items
+        ) if cart_items else False
+
         w = self._weights
         aggregate: dict[str, float] = defaultdict(float)
         for item, score in co:
@@ -107,12 +120,15 @@ class CandidateGenerator:
             if item not in exclude:
                 aggregate[item] += w["popularity"] * score
 
-        # ── Restaurant-menu gate + course-type penalty ──────────────────
+        # ── Restaurant-menu gate + course-type penalty + veg filter ──────
         filtered: dict[str, float] = {}
         for item, score in aggregate.items():
             # Gate: candidate must exist on the restaurant's menu
             if menu_items and item not in menu_items:
                 continue
+            # Veg-preference gate: if cart is all-veg, strongly penalise non-veg
+            if cart_all_veg and not self._item_is_veg.get(str(item), True):
+                score *= 0.1  # 90% penalty — ranker can override if signal is very strong
             # Penalty: if cart already has a main_course, deprioritise other mains
             if has_main and self._item_category.get(str(item), "") == "main_course":
                 score *= 0.3  # soft penalty — ranker can still surface if strong signal

@@ -70,6 +70,16 @@ def _build_items(order_rows: pd.DataFrame) -> pd.DataFrame:
         item_category=("item_type", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
         item_price=("price", "median"),
     )
+    # Propagate is_veg if available in the raw data
+    if "is_veg" in order_rows.columns:
+        veg_map = order_rows.groupby("item_id")["is_veg"].agg(
+            lambda s: s.mode().iloc[0] if not s.mode().empty else True
+        ).reset_index()
+        veg_map.columns = ["item_id", "is_veg"]
+        items = items.merge(veg_map, on="item_id", how="left")
+        items["is_veg"] = items["is_veg"].fillna(True)
+    else:
+        items["is_veg"] = True
     return items
 
 

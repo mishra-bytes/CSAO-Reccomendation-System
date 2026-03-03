@@ -29,7 +29,7 @@ class UnifiedSchemas:
         "position",
         "item_category",
     )
-    items: tuple[str, ...] = ("item_id", "item_name", "item_category", "item_price")
+    items: tuple[str, ...] = ("item_id", "item_name", "item_category", "item_price", "is_veg")
     restaurants: tuple[str, ...] = ("restaurant_id", "restaurant_name", "city", "cuisine")
 
 

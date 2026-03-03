@@ -71,6 +71,22 @@ def build_user_features(
     global_median = float(item_price["item_price"].median()) if not item_price.empty else 1.0
     user_price["price_sensitivity"] = user_price["avg_item_price_user"] / max(global_median, 1e-6)
 
+    # --- Veg/Non-veg preference (critical for Indian food) ---
+    # Compute fraction of veg items ordered by each user
+    item_veg = items[["item_id", "is_veg"]].drop_duplicates("item_id") if "is_veg" in items.columns else None
+    if item_veg is not None:
+        oi_veg = order_items.merge(item_veg, on="item_id", how="left")
+        oi_veg = oi_veg.merge(orders_local[["order_id", "user_id"]], on="order_id", how="left")
+        oi_veg["is_veg"] = oi_veg["is_veg"].fillna(1.0).astype(float)
+        user_veg = (
+            oi_veg.groupby("user_id")["is_veg"]
+            .mean()
+            .rename("user_veg_ratio")
+            .reset_index()
+        )
+    else:
+        user_veg = pd.DataFrame({"user_id": users["user_id"], "user_veg_ratio": 1.0})
+
     feats = (
         users[["user_id"]]
         .merge(order_freq[["user_id", "order_count", "order_frequency"]], on="user_id", how="left")
@@ -79,6 +95,7 @@ def build_user_features(
         .merge(total_spend, on="user_id", how="left")
         .merge(cuisine_share, on="user_id", how="left")
         .merge(user_price[["user_id", "price_sensitivity"]], on="user_id", how="left")
+        .merge(user_veg, on="user_id", how="left")
     )
     feats["user_segment"] = feats["avg_order_value"].apply(_user_segment)
     feats = feats.fillna(0.0)

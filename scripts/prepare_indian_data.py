@@ -46,6 +46,26 @@ CITIES = ["Delhi", "Mumbai", "Bangalore", "Hyderabad", "Pune", "Chennai", "Kolka
 CUISINES = ["North Indian", "South Indian", "Chinese", "Biryani",
             "Italian", "Street Food", "Bengali", "Mughlai"]
 
+# City → cuisine affinity weights (rows sum to 1.0).
+# Models real regional preferences: Bengali food concentrated in Kolkata,
+# South Indian in Chennai/Bangalore, Biryani in Hyderabad, etc.
+CITY_CUISINE_AFFINITY: dict[str, dict[str, float]] = {
+    "Delhi":     {"North Indian": 0.28, "Mughlai": 0.18, "Chinese": 0.14, "Street Food": 0.12,
+                  "South Indian": 0.08, "Biryani": 0.10, "Italian": 0.06, "Bengali": 0.04},
+    "Mumbai":    {"North Indian": 0.18, "Street Food": 0.20, "Chinese": 0.15, "South Indian": 0.12,
+                  "Mughlai": 0.10, "Biryani": 0.10, "Italian": 0.10, "Bengali": 0.05},
+    "Bangalore": {"South Indian": 0.28, "North Indian": 0.16, "Chinese": 0.14, "Biryani": 0.12,
+                  "Italian": 0.10, "Street Food": 0.08, "Mughlai": 0.07, "Bengali": 0.05},
+    "Hyderabad": {"Biryani": 0.30, "South Indian": 0.18, "North Indian": 0.14, "Mughlai": 0.12,
+                  "Chinese": 0.10, "Street Food": 0.08, "Italian": 0.05, "Bengali": 0.03},
+    "Pune":      {"North Indian": 0.20, "Street Food": 0.18, "Chinese": 0.16, "South Indian": 0.12,
+                  "Mughlai": 0.10, "Biryani": 0.10, "Italian": 0.10, "Bengali": 0.04},
+    "Chennai":   {"South Indian": 0.35, "North Indian": 0.14, "Chinese": 0.14, "Biryani": 0.12,
+                  "Street Food": 0.08, "Mughlai": 0.06, "Italian": 0.07, "Bengali": 0.04},
+    "Kolkata":   {"Bengali": 0.30, "North Indian": 0.16, "Chinese": 0.14, "Mughlai": 0.12,
+                  "Biryani": 0.10, "South Indian": 0.06, "Street Food": 0.07, "Italian": 0.05},
+}
+
 # How common each cuisine is (order volume share)
 CUISINE_WEIGHTS = {
     "North Indian": 0.22, "South Indian": 0.16, "Biryani": 0.15,
@@ -159,7 +179,7 @@ KEYWORD_CATEGORIES = {
 def build_item_catalog() -> dict[str, dict]:
     """
     Build global catalog: dish_name → {item_id, item_name, item_type,
-                                        min_price, max_price, cuisines}
+                                        min_price, max_price, is_veg, cuisines}
     """
     catalog: dict[str, dict] = {}
     idx = 1
@@ -167,7 +187,10 @@ def build_item_catalog() -> dict[str, dict]:
         if cuisine == "_default":
             continue
         for cat, dish_list in categories.items():
-            for name, min_p, max_p in dish_list:
+            for entry in dish_list:
+                name = entry[0]
+                min_p, max_p = entry[1], entry[2]
+                is_veg = bool(entry[3]) if len(entry) > 3 else True
                 if name not in catalog:
                     catalog[name] = {
                         "item_id": f"f_{idx:05d}",
@@ -175,6 +198,7 @@ def build_item_catalog() -> dict[str, dict]:
                         "item_type": cat,
                         "min_price": float(min_p),
                         "max_price": float(max_p),
+                        "is_veg": is_veg,
                         "cuisines": set(),
                     }
                     idx += 1
@@ -216,7 +240,14 @@ def build_restaurants(
         for j in range(n_rest):
             rest_id = f"r_{rest_idx:04d}"
             rest_idx += 1
-            city = CITIES[int(rng.integers(0, len(CITIES)))]
+
+            # City assignment weighted by cuisine affinity (not random)
+            city_weights = np.array([
+                CITY_CUISINE_AFFINITY.get(c, {}).get(cuisine, 1.0 / len(CITIES))
+                for c in CITIES
+            ])
+            city_weights /= city_weights.sum()
+            city = CITIES[int(rng.choice(len(CITIES), p=city_weights))]
 
             base_name = name_pool[j % len(name_pool)]
             name = f"{base_name} - {city}" if j >= len(name_pool) else base_name
@@ -316,6 +347,11 @@ def generate_orders(
     hour_w += 0.1
     hour_w /= hour_w.sum()
 
+    # Day-of-week variation: weekends get 30% more orders
+    # 0=Monday ... 6=Sunday
+    dow_w = np.array([1.0, 1.0, 1.0, 1.0, 1.2, 1.3, 1.3])  # Fri/Sat/Sun heavier
+    dow_w /= dow_w.sum()
+
     base_date = pd.Timestamp("2024-01-01")
     rows: list[dict] = []
 
@@ -372,8 +408,14 @@ def generate_orders(
         if not selected:
             continue
 
-        # Timestamp
+        # Timestamp with day-of-week weighting
         day_offset = int(rng.integers(0, 365))
+        candidate_date = base_date + pd.Timedelta(days=day_offset)
+        # Re-roll day if needed to match day-of-week distribution
+        target_dow = int(rng.choice(7, p=dow_w))
+        day_offset += (target_dow - candidate_date.dayofweek) % 7
+        day_offset = min(day_offset, 364)
+
         hour = int(rng.choice(24, p=hour_w))
         minute = int(rng.integers(0, 60))
         order_time = base_date + pd.Timedelta(days=day_offset, hours=hour, minutes=minute)
@@ -390,6 +432,7 @@ def generate_orders(
                 "item_id": item["item_id"],
                 "item_name": item["item_name"],
                 "item_type": item["item_type"],
+                "is_veg": item.get("is_veg", True),
                 "price": price,
                 "quantity": 1,
                 "line_total": price,
@@ -647,7 +690,7 @@ def prepare_embeddings(
             if cuisine == "_default":
                 continue
             for c, dishes in categories.items():
-                for d_name, _, _ in dishes:
+                for d_name, *_ in dishes:
                     if d_name == row["item_name"]:
                         cuisines.add(cuisine.lower().replace(" ", "_"))
         item_cuisine_map[iid] = cuisines
