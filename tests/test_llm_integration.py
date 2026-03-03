@@ -439,7 +439,7 @@ def main():
   ┌─────────────┐    ┌───────────────┐    ┌──────────────────┐
   │ LightGBM    │───>│ Neural        │───>│ LLM Explainer    │
   │ LambdaRank  │    │ Reranker      │    │ (OpenRouter API) │
-  │ (71 feats)  │    │ (cross-attn)  │    │ + Template fallb │
+  │ (73 feats)  │    │ (cross-attn)  │    │ + Template fallb │
   └─────────────┘    └───────────────┘    └──────────────────┘
     Stage 1            Stage 2              Stage 3
 

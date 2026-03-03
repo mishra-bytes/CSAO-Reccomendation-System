@@ -240,7 +240,7 @@ def _sensitivity_analysis(
     """
     rows = []
     # Sensitivity varies: calibration coefficient, baseline CTR, exposure rate
-    base_ndcg_delta = 0.145  # actual: CSAO NDCG (0.711) - baseline (0.566)
+    base_ndcg_delta = 0.093  # actual: CSAO NDCG (0.707) - baseline (0.614)
     for calib in [0.25, 0.5, 0.75]:
         for base_ctr in [0.04, 0.08, 0.12]:
             for exposure in [0.6, 0.8, 0.95]:
