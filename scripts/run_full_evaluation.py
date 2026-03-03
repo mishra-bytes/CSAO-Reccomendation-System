@@ -77,8 +77,16 @@ def main() -> None:
     )
     print("  Overall:")
     for m, v in std["overall"].items():
-        print(f"    {m}: {v:.4f}")
-    report["standard_eval"] = {m: round(float(v), 4) for m, v in std["overall"].items()}
+        if isinstance(v, float):
+            print(f"    {m}: {v:.4f}")
+        else:
+            print(f"    {m}: {v}")
+    report["standard_eval"] = {}
+    for m, v in std["overall"].items():
+        try:
+            report["standard_eval"][m] = round(float(v), 4)
+        except (ValueError, TypeError):
+            report["standard_eval"][m] = v
 
     # ── 2. Baseline Comparison ────────────────────────────────────────────
     _sep("2. Baseline Comparison")
@@ -96,6 +104,17 @@ def main() -> None:
         )
         print(bl_results.to_string())
         report["baseline_comparison"] = bl_results.to_dict(orient="index")
+        # Save significance tests if computed
+        sig_tests = getattr(bl_results, 'attrs', {}).get('significance_tests', {})
+        if sig_tests:
+            report["significance_tests"] = sig_tests
+            print("\n  Statistical Significance:")
+            for test_name, test_result in sig_tests.items():
+                if "error" not in test_result:
+                    paired = test_result.get("paired_bootstrap", {})
+                    print(f"    {test_name}: Δ={paired.get('observed_delta', 'N/A')}, "
+                          f"p={paired.get('p_value', 'N/A')}, "
+                          f"sig@0.05={paired.get('significant_at_005', 'N/A')}")
     except Exception as e:
         print(f"  Skipped: {e}")
         report["baseline_comparison"] = {"error": str(e)}

@@ -31,6 +31,9 @@ def bootstrap_ci(
 ) -> dict:
     """Compute bootstrap confidence interval for a ranking metric.
 
+    Uses per-query metric values for efficient resampling (avoids
+    DataFrame concatenation issues with mixed dtypes).
+
     Args:
         predictions: DataFrame with query_id, item_id, label, score.
         metric_fn: function(predictions, k) -> float (e.g., ndcg_at_k).
@@ -43,26 +46,31 @@ def bootstrap_ci(
         dict with point_estimate, ci_lower, ci_upper, std, n_bootstrap.
     """
     rng = np.random.default_rng(seed)
-    query_ids = predictions["query_id"].unique()
-    n_queries = len(query_ids)
 
     # Point estimate
     point_est = metric_fn(predictions, k)
 
-    # Bootstrap: resample queries with replacement
-    bootstrap_values = []
-    query_groups = {qid: group for qid, group in predictions.groupby("query_id")}
+    # Compute per-query metric values once
+    per_query_values = []
+    for qid, group in predictions.groupby("query_id"):
+        top = group.sort_values("score", ascending=False).head(k).reset_index(drop=True)
+        dcg = 0.0
+        for idx, label in enumerate(top["label"].astype(float).tolist(), start=1):
+            dcg += (2.0 ** label - 1.0) / math.log2(idx + 1.0)
+        ideal = sorted(group["label"].astype(float).tolist(), reverse=True)[:k]
+        idcg = 0.0
+        for idx, label in enumerate(ideal, start=1):
+            idcg += (2.0 ** label - 1.0) / math.log2(idx + 1.0)
+        per_query_values.append(dcg / max(idcg, 1e-9))
 
+    per_query_values = np.array(per_query_values)
+    n_queries = len(per_query_values)
+
+    # Bootstrap: resample per-query values (much faster than DF concat)
+    bootstrap_values = []
     for _ in range(n_bootstrap):
-        sampled_qids = rng.choice(query_ids, size=n_queries, replace=True)
-        resampled = pd.concat(
-            [query_groups[qid] for qid in sampled_qids],
-            ignore_index=True,
-        )
-        # Deduplicate query_ids for correct groupby
-        resampled["query_id"] = np.repeat(range(n_queries), [len(query_groups[qid]) for qid in sampled_qids])
-        val = metric_fn(resampled, k)
-        bootstrap_values.append(val)
+        sampled = rng.choice(per_query_values, size=n_queries, replace=True)
+        bootstrap_values.append(float(sampled.mean()))
 
     bootstrap_values = np.array(bootstrap_values)
     alpha = 1 - confidence
@@ -93,14 +101,13 @@ def paired_bootstrap_test(
 ) -> dict:
     """Paired bootstrap test: is model A significantly better than model B?
 
-    Uses the per-query delta method:
-      For each bootstrap resample, compute metric(A) - metric(B).
-      p-value = fraction of resamples where delta <= 0.
+    Uses per-query NDCG differences for efficient resampling.
+    p-value = fraction of resamples where mean(delta) <= 0.
 
     Args:
         predictions_a: predictions from model A (better model).
         predictions_b: predictions from model B (baseline).
-        metric_fn: metric function(predictions, k) -> float.
+        metric_fn: metric function(predictions, k) -> float (unused, kept for API compat).
         k: cutoff.
         n_bootstrap: resamples.
         seed: random seed.
@@ -110,38 +117,29 @@ def paired_bootstrap_test(
     """
     rng = np.random.default_rng(seed)
 
-    # Shared query set
-    qids_a = set(predictions_a["query_id"].unique())
-    qids_b = set(predictions_b["query_id"].unique())
-    shared_qids = np.array(sorted(qids_a & qids_b))
+    # Compute per-query NDCG for both models
+    ndcg_a = _per_query_ndcg(predictions_a, k)
+    ndcg_b = _per_query_ndcg(predictions_b, k)
 
+    shared_qids = sorted(set(ndcg_a.keys()) & set(ndcg_b.keys()))
     if len(shared_qids) == 0:
         return {"error": "No shared queries between models A and B"}
 
-    groups_a = {qid: g for qid, g in predictions_a[predictions_a["query_id"].isin(shared_qids)].groupby("query_id")}
-    groups_b = {qid: g for qid, g in predictions_b[predictions_b["query_id"].isin(shared_qids)].groupby("query_id")}
-
     n_queries = len(shared_qids)
+    diffs = np.array([ndcg_a[q] - ndcg_b[q] for q in shared_qids])
+    observed_delta = float(diffs.mean())
 
-    # Observed delta
-    obs_a = metric_fn(predictions_a[predictions_a["query_id"].isin(shared_qids)], k)
-    obs_b = metric_fn(predictions_b[predictions_b["query_id"].isin(shared_qids)], k)
-    observed_delta = obs_a - obs_b
-
-    # Bootstrap
+    # Bootstrap: resample per-query deltas
     delta_count_le_zero = 0
     for _ in range(n_bootstrap):
-        sampled = rng.choice(shared_qids, size=n_queries, replace=True)
-        re_a = pd.concat([groups_a[qid] for qid in sampled], ignore_index=True)
-        re_b = pd.concat([groups_b[qid] for qid in sampled], ignore_index=True)
-        re_a["query_id"] = np.repeat(range(n_queries), [len(groups_a[qid]) for qid in sampled])
-        re_b["query_id"] = np.repeat(range(n_queries), [len(groups_b[qid]) for qid in sampled])
-        val_a = metric_fn(re_a, k)
-        val_b = metric_fn(re_b, k)
-        if val_a - val_b <= 0:
+        sampled = rng.choice(diffs, size=n_queries, replace=True)
+        if sampled.mean() <= 0:
             delta_count_le_zero += 1
 
     p_value = delta_count_le_zero / n_bootstrap
+
+    obs_a = float(np.mean([ndcg_a[q] for q in shared_qids]))
+    obs_b = float(np.mean([ndcg_b[q] for q in shared_qids]))
 
     return {
         "metric_a": round(obs_a, 6),
