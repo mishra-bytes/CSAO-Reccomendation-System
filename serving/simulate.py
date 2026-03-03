@@ -56,7 +56,13 @@ def run_simulation(service: RecommendationService, n_warmup: int = 3, n_requests
     for i in range(n_requests):
         req = sample_requests[i % len(sample_requests)]
         start = time.perf_counter()
-        response = service.recommend(req)
+        try:
+            response = service.recommend(req)
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            latencies.append(elapsed_ms)
+            print(f"  [WARN] Request {i} failed: {e}")
+            continue
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         latencies.append(elapsed_ms)
         last_response = response

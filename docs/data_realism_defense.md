@@ -119,12 +119,46 @@ Orders are generated with time-of-day distributions:
 
 ### 4.3 Veg/Non-Veg Segmentation
 
-Each item is tagged veg/non-veg. Restaurant menus respect cuisine norms:
-- South Indian: ~70% vegetarian
-- Bengali: ~30% vegetarian
-- North Indian: ~50% vegetarian
+Each of the 335 dishes is individually tagged as vegetarian or non-vegetarian,
+with tags verified against standard Indian culinary classification:
 
-Users have implicit dietary preferences (consistent across orders).
+| Cuisine       | Veg Ratio | Examples (Non-Veg)              | Examples (Veg)             |
+|--------------|-----------|--------------------------------|----------------------------|
+| South Indian  | ~70%      | Chicken Chettinad, Fish Curry  | Masala Dosa, Idli, Sambar  |
+| North Indian  | ~50%      | Butter Chicken, Seekh Kebab    | Dal Makhani, Shahi Paneer  |
+| Bengali       | ~30%      | Fish Curry, Prawn Malai Curry  | Aloo Posto, Cholar Dal     |
+| Street Food   | ~65%      | Chicken Shawarma               | Pav Bhaji, Vada Pav        |
+
+**Filtering logic**: When all items in a user's cart are vegetarian, non-veg
+candidates receive a 90 % score penalty in candidate generation — modeling
+the strict vegetarian user pattern common in India (~30% of population).
+
+**User-level signal**: `user_veg_ratio` tracks the fraction of vegetarian items
+ordered historically, providing the ranker a persistent dietary preference feature.
+
+### 4.4 City-Cuisine Affinity
+
+Restaurant-to-city assignment uses a **7 × 8 affinity matrix** calibrated to
+real-world ordering patterns:
+
+| City       | Dominant Cuisine      | Weight |
+|------------|----------------------|--------|
+| Kolkata    | Bengali              | 30%    |
+| Chennai    | South Indian         | 35%    |
+| Hyderabad  | Biryani              | 30%    |
+| Delhi      | North Indian         | 30%    |
+| Mumbai     | Street Food          | 25%    |
+| Bangalore  | South Indian, Chinese | 20/20% |
+| Pune       | North Indian         | 20%    |
+
+This replaces the previous uniform-random city assignment, producing
+geographically faithful cuisine distributions.
+
+### 4.5 Day-of-Week Temporal Variation
+
+Order timestamps use weighted day-of-week sampling (Fri/Sat/Sun are 1.2–1.3×
+heavier than weekdays) to model the real weekend ordering surge visible in
+Zomato's public data.
 
 ---
 
@@ -168,7 +202,7 @@ No spurious cross-cuisine pairs appear in the top 50 by lift.
 
 ### Why These Limitations Don't Invalidate the System
 
-The CSAO model is a **feature-driven ranker** (LightGBM LambdaRank with 71 features).
+The CSAO model is a **feature-driven ranker** (LightGBM LambdaRank with 73 features).
 It does not memorize specific user-item interactions. What matters is:
 
 1. **Feature distributions are realistic** — the model learns from prices, categories,
@@ -187,8 +221,9 @@ which is the correct next step as documented in our A/B testing plan.
 
 | Table | Rows | Description |
 |-------|------|------------|
-| `items` | 582 | Authentic Indian dishes across 8 cuisines |
-| `restaurants` | 501 | Diverse set across 7 Indian metros |
-| `users` | 20,001 | Simulated delivery customers |
-| `orders` | 213,397 | Full order records with timestamps |
-| `order_items` | 952,000+ | Item-level order details with positions |
+| `items` | 583 | Authentic Indian dishes across 8 cuisines (335 synthetic + 248 Mendeley) |
+| `restaurants` | 501 | Diverse set across 7 Indian metros, city-cuisine affinity weighted |
+| `users` | 20,001 | Simulated delivery customers with veg-ratio & cuisine-share profiles |
+| `orders` | 213,397 | Full order records with DOW-weighted timestamps |
+| `order_items` | 952,098 | Item-level order details with positions and veg/non-veg tags |
+| `features` | 73 | LightGBM ranker features incl. `is_veg`, `user_veg_ratio`, `cart_has_addon` |

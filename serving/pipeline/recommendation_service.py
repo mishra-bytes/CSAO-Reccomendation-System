@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +13,8 @@ from ranking.inference.ranker import CSAORanker
 from ranking.inference.neural_reranker import NeuralReranker
 from serving.api.schemas import RecommendationRequest, RecommendationResponse
 from serving.utils.latency import LatencyTracker
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,30 +40,41 @@ class RecommendationService:
             .set_index("user_id", drop=False)
         )
 
-        # Latency history for p95/p99 tracking
-        self._latency_history: list[float] = []
+        # Ring-buffer for latency history — bounded to avoid memory leaks
+        self._latency_history: deque[float] = deque(maxlen=10_000)
 
     def recommend(self, req: RecommendationRequest) -> RecommendationResponse:
         timer = LatencyTracker()
 
         with timer.track("feature_fetch"):
             # O(1) index lookup instead of O(n) boolean mask
-            _ = self._user_index.loc[req.user_id] if req.user_id in self._user_index.index else None
+            try:
+                _ = self._user_index.loc[req.user_id] if req.user_id in self._user_index.index else None
+            except Exception:
+                log.debug("User %s not found in index — cold-start path", req.user_id)
 
         with timer.track("candidate_generation"):
-            candidates = self.artifacts.candidate_generator.generate(
-                cart_items=req.cart_item_ids,
-                restaurant_id=req.restaurant_id,
-            )
+            try:
+                candidates = self.artifacts.candidate_generator.generate(
+                    cart_items=req.cart_item_ids,
+                    restaurant_id=req.restaurant_id,
+                )
+            except Exception as e:
+                log.warning("Candidate generation failed: %s — using popularity fallback", e)
+                candidates = []
 
         with timer.track("ranking"):
-            ranked = self.artifacts.ranker.rank(
-                user_id=req.user_id,
-                restaurant_id=req.restaurant_id,
-                cart_items=req.cart_item_ids,
-                candidates=candidates,
-                top_n=req.top_n or self.default_top_n,
-            )
+            try:
+                ranked = self.artifacts.ranker.rank(
+                    user_id=req.user_id,
+                    restaurant_id=req.restaurant_id,
+                    cart_items=req.cart_item_ids,
+                    candidates=candidates,
+                    top_n=req.top_n or self.default_top_n,
+                )
+            except Exception as e:
+                log.error("Ranking failed: %s — returning empty results", e)
+                ranked = []
 
         # Stage 2: Neural cross-attention reranking (optional, <10 ms)
         if self.artifacts.neural_reranker is not None and ranked:

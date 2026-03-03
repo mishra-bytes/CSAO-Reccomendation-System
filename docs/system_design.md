@@ -41,18 +41,18 @@ This ensures the model focuses on improving rankings where it matters most — t
 │  └──────────┘    └─────────────┘    └───────────┘    └──────────────┘  │
 │       │                │                  │                  │          │
 │       ▼                ▼                  ▼                  ▼          │
-│  Pre-indexed      5 Retrievers        59+ features      Cross-attention│
+│  Pre-indexed      5 Retrievers        73 features       Cross-attention│
 │  O(1) lookup    (co-occurrence,      (cart, user,        α=0.3 blend  │
 │  user+item       session covisit,    item, CSAO          with LightGBM│
 │  features        meal-gap,           intelligence,                     │
-│                  category,           temporal,                          │
-│                  popularity)         geographic)                       │
+│                  category,           is_veg,                            │
+│                  popularity)         user_veg_ratio)                   │
 │                                                                         │
 │  ┌──────────────┐    ┌────────────┐                                    │
 │  │ MMR Diversity │──▶│    LLM     │──▶  Top-10 recommendations         │
 │  │ Reranking     │    │ Explainer  │     with explanations              │
 │  │ (λ=0.7)      │    │ (template  │                                    │
-│  │               │    │  + OpenAI) │                                    │
+│  │               │    │+OpenRouter)│                                    │
 │  └──────────────┘    └────────────┘                                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -61,7 +61,7 @@ This ensures the model focuses on improving rankings where it matters most — t
 
 **Stage 1 — LightGBM LambdaRank** (primary scorer):
 - Scores all ~200 candidates simultaneously via vectorised NumPy feature matrix
-- 59+ features across 6 groups: cart context, user RFM, item properties, CSAO intelligence, complementarity, temporal/geographic
+- 73 features across 7 groups: cart context (incl. `cart_has_addon`), user RFM (incl. `user_veg_ratio`), item properties (incl. `is_veg`), CSAO intelligence, complementarity, embeddings (PCA-8), cuisine shares
 - Single `model.predict()` call on full batch — no per-candidate loop
 - Outputs raw relevance scores; top-30 passed to Stage 2
 
